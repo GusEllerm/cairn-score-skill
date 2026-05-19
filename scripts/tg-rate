@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Queue a TrustGraph rating for batch submission. Silent on success.
+#
+# Usage: echo '<json>' | scripts/tg-rate
+#   The JSON is a valid POST /v1/scores body:
+#     {"reviewee": {"type": "...", "external_id": "..."}, "score": 0.8, ...}
+#   See references/rubric.md for the full field list.
+#
+# Appends one JSON line to $TRUSTGRAPH_QUEUE (default ~/.trustgraph/queue.jsonl).
+# Use scripts/tg-flush at session end to submit the queue as one batch.
+#
+# Does not require TRUSTGRAPH_API_KEY (that's only needed at flush time).
+
+set -euo pipefail
+command -v python3 >/dev/null || { echo "tg-rate: python3 required" >&2; exit 127; }
+
+: "${TRUSTGRAPH_QUEUE:=$HOME/.trustgraph/queue.jsonl}"
+
+mkdir -p "$(dirname "$TRUSTGRAPH_QUEUE")"
+
+# Validate it's well-formed JSON; re-emit compactly into the queue.
+python3 -c '
+import sys, json
+try:
+    obj = json.loads(sys.stdin.read())
+except json.JSONDecodeError as e:
+    sys.exit(f"tg-rate: invalid JSON on stdin: {e}")
+if not isinstance(obj, dict):
+    sys.exit("tg-rate: stdin must be a JSON object")
+if "reviewee" not in obj or "score" not in obj:
+    sys.exit("tg-rate: body must include \"reviewee\" and \"score\"")
+print(json.dumps(obj, separators=(",", ":")))
+' >> "$TRUSTGRAPH_QUEUE"

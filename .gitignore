@@ -1,0 +1,17 @@
+# Runtime artifacts (machine-specific, not source-controlled)
+hook.log
+queue.jsonl
+
+# Distribution artifacts
+*.tar.gz
+*.zip
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor junk
+*.swp
+*.swo
+.vscode/
+.idea/

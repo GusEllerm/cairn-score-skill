@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Retrieve past events for one entity, compactly. One header line + one line per event.
+#
+# Usage: scripts/tg-retrieve TYPE EXTERNAL_ID [QUERY] [K]
+# Example: scripts/tg-retrieve data_source https://api.foo.com/v1 "latency, slow" 5
+#       → # composite=0.78 confidence=0.83 n_events=12
+#       → 0.30 timeout p95 latency over 3s; per-call cost ~$0.012
+#       → 0.80 - Returned correct data, all fields present
+#       → ...
+#
+# Rationales are truncated to 200 chars. Reads use no API key.
+
+set -euo pipefail
+command -v python3 >/dev/null || { echo "tg-retrieve: python3 required" >&2; exit 127; }
+
+: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+
+TYPE="${1:?usage: tg-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
+EXTERNAL_ID="${2:?usage: tg-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
+QUERY="${3:-}"
+K="${4:-5}"
+
+BODY=$(python3 -c '
+import sys, json
+type_, ext, q, k = sys.argv[1:5]
+body = {"entity": {"type": type_, "external_id": ext}, "k": int(k), "include_aggregates": True}
+if q:
+    body["query"] = q
+print(json.dumps(body))
+' "$TYPE" "$EXTERNAL_ID" "$QUERY" "$K")
+
+RESP=$(curl -sS -X POST "$TRUSTGRAPH_BASE_URL/v1/retrieve" \
+  -H "Content-Type: application/json" \
+  -d "$BODY")
+
+python3 -c '
+import sys, json
+data = json.loads(sys.stdin.read())
+if isinstance(data, dict) and "error" in data:
+    sys.exit("tg-retrieve: " + json.dumps(data["error"]))
+
+agg = data.get("aggregates") or {}
+parts = []
+comp = agg.get("composite_score")
+if isinstance(comp, dict):
+    cs = comp.get("composite_score")
+    if cs is not None:
+        parts.append(f"composite={cs:.2f}")
+    cf = comp.get("confidence")
+    if cf is not None:
+        parts.append(f"confidence={cf:.2f}")
+n = data.get("n_events_total")
+if n is not None:
+    parts.append(f"n_events={n}")
+if parts:
+    print("# " + " ".join(parts))
+
+for ev in data.get("events", []) or []:
+    s = ev.get("score")
+    s_str = f"{s:.2f}" if isinstance(s, (int, float)) else "?"
+    fm = ",".join(ev.get("failure_modes") or []) or "-"
+    rat = (ev.get("rationale") or "").strip().replace("\n", " ")
+    if len(rat) > 200:
+        rat = rat[:197] + "..."
+    print(f"{s_str} {fm} {rat}")
+' <<< "$RESP"

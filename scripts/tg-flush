@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Submit all queued TrustGraph ratings as one batch (chunked if > 100).
+# Silent on success; removes the queue file. Errors to stderr, exit non-zero;
+# the queue is preserved so a retry is possible.
+#
+# Usage: scripts/tg-flush
+#
+# Requires TRUSTGRAPH_API_KEY (use scripts/mint-key.sh if you don't have one).
+
+set -euo pipefail
+command -v python3 >/dev/null || { echo "tg-flush: python3 required" >&2; exit 127; }
+
+# Recursion guard: if we're inside a rater-spawned Claude Code session, don't
+# flush the parent's queue.
+[[ "${TRUSTGRAPH_NESTED:-}" == "1" ]] && exit 0
+
+: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${TRUSTGRAPH_QUEUE:=$HOME/.trustgraph/queue.jsonl}"
+: "${TRUSTGRAPH_KEY_FILE:=$HOME/.trustgraph/api-key}"
+
+# Resolve TRUSTGRAPH_API_KEY: env → persisted key file → mint + persist.
+if [[ -z "${TRUSTGRAPH_API_KEY:-}" ]]; then
+  if [[ -s "$TRUSTGRAPH_KEY_FILE" ]]; then
+    TRUSTGRAPH_API_KEY=$(<"$TRUSTGRAPH_KEY_FILE")
+  else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    TRUSTGRAPH_API_KEY=$(bash "$SCRIPT_DIR/mint-key.sh")
+    mkdir -p "$(dirname "$TRUSTGRAPH_KEY_FILE")"
+    umask 077
+    printf '%s\n' "$TRUSTGRAPH_API_KEY" > "$TRUSTGRAPH_KEY_FILE"
+    chmod 600 "$TRUSTGRAPH_KEY_FILE"
+  fi
+  export TRUSTGRAPH_API_KEY
+fi
+
+[[ -s "$TRUSTGRAPH_QUEUE" ]] || exit 0
+
+TRUSTGRAPH_BASE_URL="$TRUSTGRAPH_BASE_URL" \
+TRUSTGRAPH_API_KEY="$TRUSTGRAPH_API_KEY" \
+TRUSTGRAPH_QUEUE="$TRUSTGRAPH_QUEUE" \
+python3 <<'PY'
+import sys, os, json, urllib.request, urllib.error
+
+base = os.environ["TRUSTGRAPH_BASE_URL"]
+key = os.environ["TRUSTGRAPH_API_KEY"]
+queue_path = os.environ["TRUSTGRAPH_QUEUE"]
+
+with open(queue_path) as f:
+    events = [json.loads(line) for line in f if line.strip()]
+
+if not events:
+    sys.exit(0)
+
+CHUNK = 100
+for i in range(0, len(events), CHUNK):
+    chunk = events[i:i + CHUNK]
+    payload = json.dumps({"events": chunk}).encode()
+    req = urllib.request.Request(
+        f"{base}/v1/scores/batch",
+        data=payload,
+        headers={
+            "X-Api-Key": key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read()
+            if body:
+                data = json.loads(body)
+                if isinstance(data, dict) and "error" in data:
+                    sys.exit(f"tg-flush: chunk {i // CHUNK} failed: {data['error']}")
+    except urllib.error.HTTPError as e:
+        sys.exit(f"tg-flush: HTTP {e.code} on chunk {i // CHUNK}: {e.read().decode(errors='replace')}")
+    except urllib.error.URLError as e:
+        sys.exit(f"tg-flush: network error on chunk {i // CHUNK}: {e.reason}")
+
+os.unlink(queue_path)
+PY
