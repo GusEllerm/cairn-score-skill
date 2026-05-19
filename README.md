@@ -5,6 +5,21 @@ WebFetch, WebSearch, MCP tools, curl invocations — invisibly in the background
 feeding ratings into the TrustGraph reputation API so your agent (and others)
 can check before consuming an unknown source.
 
+## Quick install
+
+```bash
+git clone https://github.com/GusEllerm/trustgraph-skill.git ~/.claude/skills/trustgraph && \
+  bash ~/.claude/skills/trustgraph/install.sh
+```
+
+The installer prompts for a rater backend:
+- **`api`** — direct Anthropic API. Needs an API key from `console.anthropic.com`. Cheap, fast.
+- **`claude-cli`** — uses Claude Code's existing auth (claude.ai subscription). No API key needed. Slower, more subscription-quota.
+
+Then start a fresh Claude Code session. Hooks fire automatically.
+
+To update later: `bash ~/.claude/skills/trustgraph/update-skill.sh`
+
 ## What it does
 
 - **Pre-check** (`scripts/tg-score`) — one-line reputation lookup before the agent commits to a marginal source.
