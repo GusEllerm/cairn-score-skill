@@ -3,20 +3,23 @@
 # Idempotent — picks up any new scripts, hook entries, or env vars.
 #
 # Usage:
-#   bash update-skill.sh
+#   bash skill/update-skill.sh                # from the cloned source repo
+#   bash /path/to/clone/skill/update-skill.sh # if installed via clone-elsewhere
 #
 # Honors:
 #   TG_RATER_BACKEND — pass-through to install.sh (skips backend prompt)
 
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+# This script lives at <repo>/skill/update-skill.sh. The git root is one
+# level up. REPO_DIR can be overridden if the layout changes.
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   echo "update-skill.sh: $REPO_DIR is not a git checkout." >&2
-  echo "  Either clone the repo (recommended):" >&2
-  echo "    git clone https://github.com/GusEllerm/trustgraph-skill.git ~/.claude/skills/trustgraph" >&2
-  echo "  Or re-run install.sh manually after downloading new sources." >&2
+  echo "  Clone the repo first (anywhere; not necessarily ~/.claude/skills/):" >&2
+  echo "    git clone https://github.com/GusEllerm/trustgraph-skill.git ~/code/trustgraph-skill" >&2
+  echo "  Then re-run: bash ~/code/trustgraph-skill/skill/update-skill.sh" >&2
   exit 1
 fi
 
@@ -36,4 +39,5 @@ else
 fi
 
 echo
-bash "$REPO_DIR/install.sh" "$REPO_DIR"
+# install.sh defaults DEST to ~/.claude/skills/trustgraph; don't override here.
+bash "$REPO_DIR/skill/install.sh"

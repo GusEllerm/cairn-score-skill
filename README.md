@@ -8,9 +8,11 @@ can check before consuming an unknown source.
 ## Quick install
 
 ```bash
-git clone https://github.com/GusEllerm/trustgraph-skill.git ~/.claude/skills/trustgraph && \
-  bash ~/.claude/skills/trustgraph/install.sh
+git clone https://github.com/GusEllerm/trustgraph-skill.git ~/code/trustgraph-skill && \
+  bash ~/code/trustgraph-skill/skill/install.sh
 ```
+
+The repo holds two surfaces side-by-side — the Claude Code skill (under `skill/`) and an MCP server (under `mcp-server/`, in progress). The installer copies the skill content from `skill/` to `~/.claude/skills/trustgraph/` and registers the hooks; clone the repo anywhere convenient (the example above uses `~/code/`).
 
 The installer prompts for a rater backend:
 - **`api`** — direct Anthropic API. Needs an API key from `console.anthropic.com`. Cheap, fast.
@@ -18,7 +20,7 @@ The installer prompts for a rater backend:
 
 Then start a fresh Claude Code session. Hooks fire automatically.
 
-To update later: `bash ~/.claude/skills/trustgraph/update-skill.sh`
+To update later: `bash ~/code/trustgraph-skill/skill/update-skill.sh` (the script does `git pull` in the clone and re-runs `install.sh`).
 
 ## What it does
 
@@ -51,12 +53,12 @@ The `api` backend hits `api.anthropic.com` directly with a tight tool-use prompt
 ## Install
 
 ```bash
-bash install.sh
+bash skill/install.sh
 ```
 
 The installer:
 
-1. Copies the skill files to `~/.claude/skills/trustgraph/` (or wherever you pass as the first arg).
+1. Copies the skill content from `skill/` to `~/.claude/skills/trustgraph/` (or wherever you pass as the first arg). The installed layout is flat — `SKILL.md`, `references/`, `scripts/` all at the top level of the destination.
 2. Marks the wrapper scripts executable.
 3. **Prompts for the backend** (or use `TG_RATER_BACKEND=api|claude-cli` to skip).
 4. For `api`: prompts for `ANTHROPIC_API_KEY` (hidden input) and saves to `~/.trustgraph/anthropic-key`, mode 600. **Not** put in `settings.json` env — that would clash with Claude Code's own auth.
@@ -102,18 +104,20 @@ Stop hook → scripts/tg-flush
 POST /v1/scores/batch   →   TrustGraph deployment
 ```
 
-Files:
+Repo layout:
 
-- `SKILL.md` — procedural skeleton
-- `references/rubric.md` — score anchors, weight, dimensions, inversion rule
-- `references/examples.md` — four worked submissions
-- `references/queries.md` — `/v1/profile`, `/v1/retrieve`, `/v1/rank`, `/v1/capabilities`
-- `references/scoring-model.md` — decay + confidence accrual
-- `scripts/tg-score` `tg-rate` `tg-flush` `tg-retrieve` — manual wrappers
-- `scripts/tg-judge-and-rate` — rater (both backends)
-- `scripts/tg-hook-postool` — PostToolUse hook entry point
-- `scripts/mint-key.sh` — mint a TrustGraph API key
-- `install.sh`, `uninstall.sh` — setup / removal
+- `skill/SKILL.md` — procedural skeleton
+- `skill/references/rubric.md` — score anchors, weight, dimensions, inversion rule
+- `skill/references/examples.md` — four worked submissions
+- `skill/references/queries.md` — `/v1/profile`, `/v1/retrieve`, `/v1/rank`, `/v1/capabilities`
+- `skill/references/scoring-model.md` — decay + confidence accrual
+- `skill/scripts/tg-score` `tg-rate` `tg-flush` `tg-retrieve` — manual wrappers
+- `skill/scripts/tg-judge-and-rate` — rater (both backends)
+- `skill/scripts/tg-hook-postool` — PostToolUse hook entry point
+- `skill/scripts/mint-key.sh` — mint a TrustGraph API key (shared with the MCP server)
+- `skill/install.sh`, `skill/uninstall.sh`, `skill/update-skill.sh` — setup / removal / update
+- `mcp-server/` — TrustGraph MCP server (in progress; see `MCP-PLAN.md`)
+- `MCP-PLAN.md` — design plan for the MCP port (disposable scratch; removed once implementation lands)
 
 ## Configuration
 

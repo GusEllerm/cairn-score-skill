@@ -215,10 +215,10 @@ Drop `warnings.simplefilter("error")` (would crash on the first `DeprecationWarn
 | `~/.trustgraph/api-key` | Reviewer key (shared with Code skill). Mode 600. Atomic-written via `mktemp + mv -f` under `umask 077`. First surface to mint owns the identity baked into it. |
 | `~/.trustgraph/api-key.lock` | `fcntl.flock(LOCK_EX)` taken during read-or-mint-and-persist. Honored by `mint-key.sh`; the Python MCP shells out to that script. |
 
-One source of truth: refactored `scripts/mint-key.sh` owns read-or-mint-and-persist under the lock. The Python MCP invokes it via `TRUSTGRAPH_MINT_SCRIPT` (default: `<mcp-server-package>/../scripts/mint-key.sh` — clone-relative; this MCP is designed to run from the git clone, not as a pip-installed package).
+One source of truth: refactored `skill/scripts/mint-key.sh` owns read-or-mint-and-persist under the lock. The Python MCP invokes it via `TRUSTGRAPH_MINT_SCRIPT` (default: `<mcp-server-package>/../skill/scripts/mint-key.sh` — clone-relative; this MCP is designed to run from the git clone, not as a pip-installed package).
 
 ```bash
-# scripts/mint-key.sh — sketch of the Phase 3 refactor
+# skill/scripts/mint-key.sh — sketch of the Phase 3 refactor
 #
 # Usage:
 #   mint-key.sh                                 # reads/mints, prints key on stdout
@@ -294,11 +294,11 @@ Semantics worth highlighting:
 |---|---|---|
 | 0 | `mcp-server/server.py` (flat, single file, ≤400 lines target); `mcp-server/pyproject.toml` with `requires-python = ">=3.11"`, `mcp[cli]>=1.12,<2`, `httpx>=0.27,<1` (no `[build-system]` and no `[project.scripts]` — single-file "application" project, invoked via `python server.py` from Desktop); `def main(): mcp.run()` entry; `uv.lock` committed; stdio-hygiene shim in place; minimal `hello` tool scaffolding | `cd mcp-server && uv run --locked mcp dev server.py` lists the `hello` tool (or the non-interactive equivalent: `uv run --locked python -c "import asyncio, server; print([t.name for t in asyncio.run(server.mcp.list_tools())])"`) |
 | 1 | Read-only tools: `score` (with `detail` enum), `retrieve` (rationale truncation in response), `rank`, `capabilities`; AppContext lifespan with httpx; response Pydantic models per the Appendix (datetime → `str \| None`) | Manual `mcp dev` exercises each tool against the live API; rationale truncation verified in `retrieve` |
-| 2 | `get_rubric` tool — returns a Pydantic `Rubric` model (anchors, dimensions, weight semantics, examples). Source: hardcoded constant in `server.py` extracted from `references/rubric.md` (no build-time extraction; simpler) | `mcp dev` inspector renders the structured rubric |
+| 2 | `get_rubric` tool — returns a Pydantic `Rubric` model (anchors, dimensions, weight semantics, examples). Source: hardcoded constant in `server.py` extracted from `skill/references/rubric.md` (no build-time extraction; simpler) | `mcp dev` inspector renders the structured rubric |
 | 3 | Auth refactor: rewrite `mint-key.sh` per the State section sketch (own read-or-mint-and-persist under `fcntl.flock`; atomic mktemp+mv; `--write` mode; first-mint-wins identity); MCP shells out via `TRUSTGRAPH_MINT_SCRIPT`; `tg-flush` also picks up the refactored script | Concurrent mint test (race two processes against empty key file) yields ONE key; **SIGKILL of mint script mid-execution releases the lock** (kernel reaps fds); key file never observed at mode 644 |
 | 4 | `rate` tool with `type` discriminator; per-field caps (task_tags items ≤32 + count ≤10; failure_modes items ≤64 + count ≤10; rationale ≤500; dimension key whitelist with reject-on-unknown; metric key regex with reject-on-unknown; metric value sanitization drops non-numeric); reserved-prefix client-side check; single in-memory retry on 5xx; no retry on timeout or 429 (with `Retry-After` quoted); ToolError messages include offending key/value; submission via `POST /v1/scores` (singular, immediate-submit endpoint) with `X-Api-Key` header; AppContext.api_key lazy-loaded via `mint-key.sh` on first `rate` call | A rating lands; all validation rules + retry behavior verified |
 | 5 | Tool description tuning per the 4-part template; rubric condensate (18 lines) embedded in `rate`; "proactive, unprompted" language in `score`/`rate` | Smoke-test in Desktop: paste an unfamiliar URL → model calls `score` first proactively, then `rate` at the end |
-| 6 | Paired claude.ai skill: manual upload via the claude.ai Customize panel (Settings → Capabilities → Skills → upload zip). Bundle layout: flat zip with `SKILL.md` at root + `references/{rubric,queries,examples,scoring-model}.md`. Web UI flow only; no CLI exists today | Skill appears in Customize panel; conversation prologue includes the skill content; model fires proactive `score` in a fresh Desktop session |
+| 6 | Paired claude.ai skill: manual upload via the claude.ai Customize panel (Settings → Capabilities → Skills → upload zip). Bundle layout: flat zip with `SKILL.md` at root + `references/{rubric,queries,examples,scoring-model}.md` (sourced from `skill/SKILL.md` and `skill/references/`). Web UI flow only; no CLI exists today | Skill appears in Customize panel; conversation prologue includes the skill content; model fires proactive `score` in a fresh Desktop session |
 | 7 | README install section: **primary path is hand-edited `~/Library/Application Support/Claude/claude_desktop_config.json` with the JSON block in the Appendix**; `uv run --locked mcp install server.py --name "TrustGraph"` documented as a shortcut but caveated (bakes the clone's absolute path; `-v`/`-f` flag behavior has shifted across SDK versions — verify against current SDK at impl time); loud DNS-takeover warning recommending `TRUSTGRAPH_BASE_URL` override of the PoC URL | Recipient can install from a fresh clone in <10 minutes via the hand-edit path |
 | 8 (later) | If/when backend adds idempotency-key support: client sends `Idempotency-Key: <uuid>` on `rate`; remove the "may have been recorded" timeout phrasing | Mid-call crash test produces no duplicate |
 
@@ -357,7 +357,7 @@ None. All decisions made.
 
 ## Appendix A: response shapes
 
-Sketches based on `references/queries.md` + `SKILL.md` + the bash wrappers. Pydantic models use `model_config = ConfigDict(extra="allow")` to tolerate server-side additions. **Datetime fields are `str | None` until live-API verification confirms strict-ISO at Phase 1 implementation time.**
+Sketches based on `skill/references/queries.md` + `skill/SKILL.md` + the bash wrappers. Pydantic models use `model_config = ConfigDict(extra="allow")` to tolerate server-side additions. **Datetime fields are `str | None` until live-API verification confirms strict-ISO at Phase 1 implementation time.**
 
 ### `GET /v1/score` (used by `score(detail="summary")`)
 
@@ -494,7 +494,7 @@ Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (mac
       ],
       "env": {
         // Required: where the MCP can find the shared mint-key.sh script.
-        "TRUSTGRAPH_MINT_SCRIPT": "/absolute/path/to/trustgraph-skill/scripts/mint-key.sh",
+        "TRUSTGRAPH_MINT_SCRIPT": "/absolute/path/to/trustgraph-skill/skill/scripts/mint-key.sh",
 
         // Optional: override the TrustGraph deployment URL. The PoC URL is
         // experimental — recommend setting this for any non-throwaway use.

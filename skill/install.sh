@@ -40,11 +40,19 @@ echo "  settings: $SETTINGS"
 echo
 
 # Copy skill files into place (unless source == dest, e.g. re-running in place).
+# Skill content (SKILL.md, references/, scripts/, installer scripts) lives
+# alongside this script in skill/. README.md and LICENSE live one level up at
+# the repo root; copy them in too if present so the installed dir is browsable.
 if [[ "$SRC" != "$DEST" ]]; then
   mkdir -p "$DEST"
-  for item in SKILL.md references scripts install.sh uninstall.sh update-skill.sh README.md LICENSE; do
+  for item in SKILL.md references scripts install.sh uninstall.sh update-skill.sh; do
     if [[ -e "$SRC/$item" ]]; then
       cp -R "$SRC/$item" "$DEST/"
+    fi
+  done
+  for item in README.md LICENSE; do
+    if [[ -e "$SRC/../$item" ]]; then
+      cp "$SRC/../$item" "$DEST/"
     fi
   done
   echo "  copied skill files → $DEST"
