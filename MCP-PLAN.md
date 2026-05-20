@@ -357,7 +357,7 @@ None. All decisions made.
 
 ## Appendix A: response shapes
 
-Sketches based on `skill/references/queries.md` + `skill/SKILL.md` + the bash wrappers. Pydantic models use `model_config = ConfigDict(extra="allow")` to tolerate server-side additions. **Datetime fields are `str | None` until live-API verification confirms strict-ISO at Phase 1 implementation time.**
+**Verified against the live PoC API during Phase 1 implementation** (2026-05-20). Diverged from the rev-5 sketches in three specific ways: `/v1/profile` `composite_score` is a `ScalarAggregate` (not a flat float), `/v1/capabilities` returns `tags` not `capabilities`, and `/v1/rank` results use `rank_dimension` + `composite_score` (both `ScalarAggregate`) rather than `decayed_score` + `confidence`. Models use `model_config = ConfigDict(extra="allow")` to tolerate server-side additions (e.g., `diagnostics`, `displayed_context`, `context_chips`, `pooled_events`, `reviewer_external_id` on events). Datetime fields are `str | None` (no datetime parsing) so Pydantic never rejects a server timestamp format. Authoritative source-of-truth lives in `mcp-server/server.py`.
 
 ### `GET /v1/score` (used by `score(detail="summary")`)
 
@@ -365,18 +365,19 @@ Sketches based on `skill/references/queries.md` + `skill/SKILL.md` + the bash wr
 class ScoreSummary(BaseModel):
     composite_score: float            # [0, 1]; 0.5 for unknown
     confidence: float                 # [0, 1]; 0.0 for unknown
-    last_updated: str | None          # ISO timestamp string; null if never rated
+    last_updated: str | None
+    # plus: diagnostics (alpha, beta, n_eff, mu) — tolerated via extra="allow"
 ```
 
 ### `GET /v1/profile` (used by `score(detail="full")`)
 
 ```python
-class DimensionAggregate(BaseModel):
-    value: float                      # decayed dimension reading, [0, 1]
+class ScalarAggregate(BaseModel):
+    value: float                      # decayed reading, [0, 1]
     confidence: float
     last_updated: str | None          # null = no measurement, came from prior
 
-class FailureMode(BaseModel):
+class FailureModeRow(BaseModel):
     tag: str
     n_events: int
 
@@ -384,14 +385,19 @@ class CapabilityTagRow(BaseModel):
     tag: str
     n_events: int
 
-class Profile(BaseModel):
-    composite_score: float
-    confidence: float
-    dimensions: dict[str, DimensionAggregate]
-    top_failure_modes: list[FailureMode]
-    top_capability_tags: list[CapabilityTagRow]
-    n_events: int
+class EntityProfile(BaseModel):
+    entity: dict[str, str]
     known: bool                       # false → fields came from scorer's prior
+    composite_score: ScalarAggregate  # NESTED, not a flat float
+    dimensions: dict[str, ScalarAggregate]
+    top_failure_modes: list[FailureModeRow]
+    top_capability_tags: list[CapabilityTagRow]
+    n_events_total: int
+    # optional, may be null for unknown entities:
+    n_distinct_reviewers: int | None
+    first_observed_at: str | None
+    last_observed_at: str | None
+    # plus: displayed_context, pooled_events, context_chips — extra="allow"
 ```
 
 ### `POST /v1/retrieve` (used by `retrieve`)
@@ -399,7 +405,7 @@ class Profile(BaseModel):
 ```python
 class Event(BaseModel):
     score: float
-    weight: float
+    weight: float | None              # optional; NOT always returned by /v1/rank's supporting_event
     task: str | None
     rationale: str | None             # MCP truncates to 200 chars in response;
                                       # treat as user-supplied text on read.
@@ -407,38 +413,45 @@ class Event(BaseModel):
     failure_modes: list[str] | None
     metrics: dict[str, float] | None
     task_tags: list[str] | None
-    observed_at: str                  # ISO timestamp string
+    observed_at: str | None
     similarity: float | None          # present when query was provided
+    # plus: event_id, context, reviewer_external_id, reviewer_type — extra="allow"
 
-class CompositeAggregate(BaseModel):
-    composite_score: float
-    confidence: float
-    # may include last_updated; tolerated via extra="allow"
+class FailureModeCount(BaseModel):
+    tag: str
+    count: int                        # NOTE: `count`, NOT `n_events`
+                                      # (different field name from /v1/profile's
+                                      # FailureModeRow — same concept, server quirk)
 
-class Aggregates(BaseModel):
-    composite_score: CompositeAggregate
-    dimensions: dict[str, DimensionAggregate]
-    failure_modes: dict[str, int]
+class RetrieveAggregates(BaseModel):
+    composite_score: ScalarAggregate  # may lack last_updated; tolerated
+    dimensions: dict[str, ScalarAggregate]
+    top_failure_modes: list[FailureModeCount] = []
 
 class RetrieveResult(BaseModel):
+    entity: dict[str, str] | None
     events: list[Event]
-    aggregates: Aggregates | None     # present when include_aggregates=True
-    n_events_total: int
+    aggregates: RetrieveAggregates | None    # present when include_aggregates=True
+    n_events_total: int | None        # NOT always present (e.g. empty queries)
+    displayed_context: str | None
 ```
 
 ### `POST /v1/rank` (used by `rank`)
 
 ```python
 class RankedEntity(BaseModel):
-    entity: dict[str, str]            # {"type": ..., "external_id": ...}
-    decayed_score: float
-    confidence: float
+    entity: dict[str, str]
+    rank_dimension: ScalarAggregate   # decayed reading on the ranked dimension
+    composite_score: ScalarAggregate  # always returned regardless of rank_by
     n_events: int
     supporting_event: Event | None    # present when include_supporting_event=True
 
 class RankResult(BaseModel):
     results: list[RankedEntity]
     candidates_capped: bool
+    capability_tag: str | None        # echo of input
+    ranked_by: str | None             # echo of input — server uses `ranked_by`, not `rank_by`
+    candidates_considered: int | None
 ```
 
 ### `GET /v1/capabilities` (used by `capabilities`)
@@ -448,10 +461,12 @@ class CapabilityRow(BaseModel):
     tag: str
     n_events: int
     n_entities: int
-    last_seen: str                    # ISO timestamp string
+    last_seen: str | None
 
 class CapabilitiesResult(BaseModel):
-    capabilities: list[CapabilityRow]
+    tags: list[CapabilityRow]         # field is `tags`, NOT `capabilities`
+    context: str | None
+    sort: str | None
 ```
 
 ### `POST /v1/scores` (used by `rate` — submission body, not response)
