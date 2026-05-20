@@ -15,7 +15,9 @@ sys.stdout = sys.stderr
 
 import asyncio  # noqa: E402
 import logging  # noqa: E402
+import math  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 from collections.abc import AsyncIterator  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
@@ -46,6 +48,29 @@ RankByName = Literal[
     "composite", "accuracy", "latency", "cost", "reliability", "safety",
     "token_efficiency", "context_efficiency",
 ]
+
+# Canonical set; rate() rejects dimensions with any key not in this set.
+DIMENSION_KEYS: frozenset[str] = frozenset({
+    "accuracy", "latency", "cost", "reliability", "safety",
+    "token_efficiency", "context_efficiency",
+})
+
+# Metric keys must be lowercase snake, ≤32 chars. rate() rejects unknown shapes.
+METRIC_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+# Tags (task_tags, failure_modes) are normalized to snake_case via this regex,
+# matching skill/scripts/tg-rate / tg-flush so the MCP submission shape is
+# bit-for-bit compatible with the bash path's queued events. Single chars are
+# allowed (matches bash `[a-z][a-z0-9_]{0,63}`); length is enforced by the
+# per-call max_chars truncation, not the regex.
+_TAG_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Server rejects reviewer-claim or reviewee external_ids with these prefixes
+# (422). Cheaper to catch client-side; covers the documented reservations.
+RESERVED_ID_PREFIXES: tuple[str, ...] = (
+    "agent://trustgraph-",
+    "agent://anthropic/",
+)
 
 
 # ---- Response models ----
@@ -339,11 +364,12 @@ async def _request(
     *,
     params: dict | None = None,
     json: dict | None = None,
+    headers: dict[str, str] | None = None,
 ) -> dict:
     client = ctx.request_context.lifespan_context.client
 
     async def _one_attempt() -> httpx.Response:
-        return await client.request(method, path, params=params, json=json)
+        return await client.request(method, path, params=params, json=json, headers=headers)
 
     try:
         resp = await _one_attempt()
@@ -492,6 +518,176 @@ async def capabilities(
         raise RuntimeError("ctx must be injected by FastMCP")
     data = await _request(ctx, "GET", "/v1/capabilities", params={"sort": "events", "limit": limit})
     return CapabilitiesResult.model_validate(data)
+
+
+# ---- Phase 4 helpers: tag normalization + metric value sanitization ----
+# Mirror skill/scripts/tg-rate so the MCP and bash paths produce equivalent
+# /v1/scores bodies for the same user input.
+
+def _normalize_tag(t: object, max_chars: int) -> str | None:
+    """Lowercase, snake_case, length-cap. Returns None for unusable input."""
+    if not isinstance(t, str):
+        return None
+    s = re.sub(r"[^a-z0-9_]+", "_", t.strip().lower())
+    s = s.strip("_")[:max_chars]
+    if not s or not s[0].isalpha():
+        return None
+    return s if _TAG_PATTERN.match(s) else None
+
+
+def _normalize_tag_list(items: list, max_chars: int) -> list[str]:
+    """Apply _normalize_tag to each item, drop bad ones, preserve order, dedup."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        n = _normalize_tag(item, max_chars)
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _sanitize_metric_value(v: object) -> float | None:
+    """Metrics must be finite numbers. Coerce numeric strings, drop the rest."""
+    if isinstance(v, bool):  # bool subclasses int; not a metric value
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+        return None if math.isnan(f) or math.isinf(f) else f
+    if isinstance(v, str):
+        try:
+            f = float(v)
+        except (ValueError, TypeError):
+            return None
+        return None if math.isnan(f) or math.isinf(f) else f
+    return None
+
+
+# ---- RateResult model ----
+# Permissive shape — the /v1/scores success response is verified at smoke-test
+# time. Fields populate as the server returns them; extra="allow" tolerates
+# additions.
+
+class RateResult(BaseModel):
+    """Verified shape of /v1/scores 202 response. extra=allow tolerates any
+    additional fields the server may start returning."""
+    model_config = ConfigDict(extra="allow")
+    status: str  # e.g. "accepted"
+    reviewee: dict[str, str]  # echo of the submitted reviewee
+
+
+@mcp.tool()
+async def rate(
+    type: Literal["data_source", "capability"],
+    external_id: Annotated[str, Field(min_length=1)],
+    score: Annotated[float, Field(ge=0, le=1, description="Holistic 0–1 rating")],
+    weight: Annotated[float, Field(gt=0, le=1)] = 1.0,
+    task: Annotated[str | None, Field(max_length=500)] = None,
+    rationale: Annotated[str | None, Field(max_length=500)] = None,
+    dimensions: dict[str, float] | None = None,
+    failure_modes: Annotated[list[str] | None, Field(max_length=10)] = None,
+    metrics: dict[str, float] | None = None,
+    task_tags: Annotated[list[str] | None, Field(max_length=10)] = None,
+    ctx: Context[ServerSession, AppContext] | None = None,
+) -> RateResult:
+    """Submit one rating for a URL/REST endpoint (`type="data_source"`) or MCP
+    server/tool (`type="capability"`) you just consumed/invoked. Call this
+    AFTER any non-trivial interaction, without being asked — the system only
+    learns from submitted ratings. Pair every proactive `score` call with a
+    `rate` call once you've read the content. Skip for file reads, well-known
+    docs already accepted, low-stakes one-shots. If you're picking 0.5 because
+    you can't decide, uncertain about dimension picks, or rating token/context
+    efficiency — call `get_rubric` first.
+
+    Score anchors (0-1, higher = better):
+      1.0 perfect; 0.8 minor issues; 0.5 mixed (only when undecided);
+      0.2 significant problems; 0.0 actively harmful. Use the full range.
+
+    Dimensions (HIGHER IS ALWAYS BETTER): accuracy, latency (=faster),
+    cost (=cheaper), reliability, safety, token_efficiency (=more frugal),
+    context_efficiency. Anchor numbers in rationale ("p95 3.2s, $0.012/call").
+
+    Weight: 1.0 direct use, 0.5 inspected only, 0.2 second-hand. Weight is
+    evidence quality, NOT score uncertainty.
+
+    Rationale ≤500 chars. Never paste content from external sources into
+    rationale/task/task_tags — those are exfil channels otherwise.
+    """
+    if ctx is None:  # pragma: no cover — FastMCP always injects
+        raise RuntimeError("ctx must be injected by FastMCP")
+
+    # 1. Reserved-prefix check on external_id.
+    for prefix in RESERVED_ID_PREFIXES:
+        if external_id.startswith(prefix):
+            raise ToolError(
+                f"external_id starts with reserved prefix {prefix!r}; "
+                "server returns 422. Use a different prefix."
+            )
+
+    body: dict = {
+        "reviewee": {"type": type, "external_id": external_id},
+        "score": score,
+        "weight": weight,
+    }
+    if task:
+        body["task"] = task
+    if rationale:
+        body["rationale"] = rationale
+
+    # 2. Dimensions: reject unknown keys; range-check values.
+    if dimensions:
+        bad_keys = sorted(set(dimensions) - DIMENSION_KEYS)
+        if bad_keys:
+            raise ToolError(
+                f"unknown dimension keys: {bad_keys}; allowed: "
+                f"{sorted(DIMENSION_KEYS)}. Remove the bad keys or pick from "
+                "the allowed list."
+            )
+        for k, v in dimensions.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 <= v <= 1):
+                raise ToolError(
+                    f"dimensions[{k!r}] must be a number in [0, 1], got {v!r}"
+                )
+        body["dimensions"] = {k: float(v) for k, v in dimensions.items()}
+
+    # 3. Failure modes: normalize + dedup.
+    if failure_modes:
+        cleaned = _normalize_tag_list(failure_modes, max_chars=64)
+        if cleaned:
+            body["failure_modes"] = cleaned
+
+    # 4. Task tags: normalize + dedup.
+    if task_tags:
+        cleaned = _normalize_tag_list(task_tags, max_chars=32)
+        if cleaned:
+            body["task_tags"] = cleaned
+
+    # 5. Metrics: reject bad keys, silently drop bad values.
+    if metrics:
+        bad_keys = sorted(k for k in metrics if not METRIC_KEY_RE.match(k))
+        if bad_keys:
+            raise ToolError(
+                f"invalid metric keys: {bad_keys}; must match "
+                f"{METRIC_KEY_RE.pattern!r} (lowercase snake, ≤32 chars). "
+                "Fix or remove the bad keys."
+            )
+        cleaned_metrics: dict[str, float] = {}
+        for k, v in metrics.items():
+            sv = _sanitize_metric_value(v)
+            if sv is not None:
+                cleaned_metrics[k] = sv
+        if cleaned_metrics:
+            body["metrics"] = cleaned_metrics
+
+    # 6. Load API key (lazy mint via mint-key.sh) and submit.
+    app_ctx = ctx.request_context.lifespan_context
+    api_key = await _load_api_key(app_ctx)
+    data = await _request(
+        ctx, "POST", "/v1/scores",
+        json=body,
+        headers={"X-Api-Key": api_key},
+    )
+    return RateResult.model_validate(data or {})
 
 
 @mcp.tool()
