@@ -292,7 +292,7 @@ Semantics worth highlighting:
 
 | Phase | Output | Done when |
 |---|---|---|
-| 0 | `mcp-server/server.py` (flat, single file, ≤400 lines target); `mcp-server/pyproject.toml` with `requires-python = ">=3.11"`, `mcp[cli]>=1.12,<2`, `httpx>=0.27,<1`; `[project.scripts]` entry `trustgraph-mcp = "server:main"` with `def main(): mcp.run()`; `uv.lock` committed; stdio-hygiene shim in place; minimal `hello` tool scaffolding | `cd mcp-server && uv run --locked mcp dev server.py` lists the `hello` tool |
+| 0 | `mcp-server/server.py` (flat, single file, ≤400 lines target); `mcp-server/pyproject.toml` with `requires-python = ">=3.11"`, `mcp[cli]>=1.12,<2`, `httpx>=0.27,<1` (no `[build-system]` and no `[project.scripts]` — single-file "application" project, invoked via `python server.py` from Desktop); `def main(): mcp.run()` entry; `uv.lock` committed; stdio-hygiene shim in place; minimal `hello` tool scaffolding | `cd mcp-server && uv run --locked mcp dev server.py` lists the `hello` tool (or the non-interactive equivalent: `uv run --locked python -c "import asyncio, server; print([t.name for t in asyncio.run(server.mcp.list_tools())])"`) |
 | 1 | Read-only tools: `score` (with `detail` enum), `retrieve` (rationale truncation in response), `rank`, `capabilities`; AppContext lifespan with httpx; response Pydantic models per the Appendix (datetime → `str \| None`) | Manual `mcp dev` exercises each tool against the live API; rationale truncation verified in `retrieve` |
 | 2 | `get_rubric` tool — returns a Pydantic `Rubric` model (anchors, dimensions, weight semantics, examples). Source: hardcoded constant in `server.py` extracted from `references/rubric.md` (no build-time extraction; simpler) | `mcp dev` inspector renders the structured rubric |
 | 3 | Auth refactor: rewrite `mint-key.sh` per the State section sketch (own read-or-mint-and-persist under `fcntl.flock`; atomic mktemp+mv; `--write` mode; first-mint-wins identity); MCP shells out via `TRUSTGRAPH_MINT_SCRIPT`; `tg-flush` also picks up the refactored script | Concurrent mint test (race two processes against empty key file) yields ONE key; **SIGKILL of mint script mid-execution releases the lock** (kernel reaps fds); key file never observed at mode 644 |
@@ -490,7 +490,7 @@ Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (mac
       "args": [
         "--directory", "/absolute/path/to/trustgraph-skill/mcp-server",
         "run", "--locked",
-        "trustgraph-mcp"
+        "python", "server.py"
       ],
       "env": {
         // Required: where the MCP can find the shared mint-key.sh script.

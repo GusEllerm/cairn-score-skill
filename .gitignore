@@ -2,6 +2,12 @@
 hook.log
 queue.jsonl
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
 # Distribution artifacts
 *.tar.gz
 *.zip
