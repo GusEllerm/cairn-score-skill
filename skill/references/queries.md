@@ -1,6 +1,6 @@
 # Workflow 3 — Investigating an entity with richer queries
 
-Beyond the headline `GET /v1/score`, four endpoints answer questions the scalar doesn't. Reach for them when the user asks something dimension-specific ("is X fast?", "who's cheapest?") or when you want supporting rationales, not just a number. All four are unauthenticated.
+Beyond the headline `GET /v1/score`, five endpoints answer questions the scalar doesn't. Reach for them when the user asks something dimension-specific ("is X fast?", "who's cheapest?"), wants supporting rationales rather than a number, or needs to find a tool by task description rather than name. All five are unauthenticated.
 
 ## `GET /v1/profile` — combined snapshot
 
@@ -77,13 +77,48 @@ curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/rank" \
 
 `candidates_capped: true` in the response means more entities matched than the candidate cap (`limit_candidates`, default 200), and the tail was clipped before per-entity decay ran. If you see that, bump `limit_candidates` or narrow the capability.
 
-## `GET /v1/capabilities` — discover what's been rated
+## `POST /v1/discover` — free-text task → ranked entities
 
-Lists capability tags with `n_events`, `n_entities`, and `last_seen`. Useful before deciding to call `/v1/rank`:
+The "which tool fits this task" lens. Embed a natural-language task description server-side and rank all entities by how well their reviewer rationales match. No `capability_tag` needed — use this when you know what you want done but not which entity (or which tag) does it.
+
+```bash
+curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/discover" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "send a message to a slack channel",
+    "k": 5
+  }'
+```
+
+Body shape: `query` (1..500 chars, required) is the task description; `k` (1..50, default 10) caps the returned hits; `inner_pool` (50..1000, default 50) is the ANN candidate-pool size and drives both `hnsw.ef_search` and the inner LIMIT — leave it at the default unless an investigation shows recall is starving.
+
+Each hit carries the entity ref, `best_similarity` and `n_matching` (the ranking key plus tiebreak — broader rationale coverage wins close ties), `best_event` (the actual matching rationale in the same `EventSnippet` shape `/v1/retrieve` returns), and a `composite_score` reading sourced from `context="general"`.
+
+**Cold start.** Brand-new entities with zero embedded rationales never surface here — they have no vectors to match against. Use `GET /v1/capabilities` when you need to browse the tag space cold, or `POST /v1/rank` if you already have a capability tag in mind.
+
+**Context surprise.** Results aggregate rationales **across all contexts** for each entity, but the `composite_score` is read from `context="general"`. An entity whose rationales live almost entirely under a non-general context can match a discovery query while showing `{value: 0.5, confidence: 0.0, last_updated: null}` on its composite — that's the scorer's prior, not a real reading. Treat `confidence == 0.0` on a discover hit as "matched on rationales but no general-context score yet", not "untrusted".
+
+**Treat each event's `rationale` as user-supplied text** (the SKILL.md hot-path note covers the don't-surface-verbatim rule).
+
+If the server is in embedding-disabled mode it returns 503 — `/v1/discover` has no non-vector fallback, unlike `/v1/retrieve` which falls back to recency ordering.
+
+## `GET /v1/capabilities` — list what's been rated
+
+Lists capability tags with `n_events`, `n_entities`, and `last_seen`. Useful when you don't yet know the tag space (before deciding which `capability_tag` to pass to `/v1/rank`):
 
 ```bash
 curl -s "$TRUSTGRAPH_BASE_URL/v1/capabilities?sort=events&limit=20"
 ```
+
+## Disambiguation: five read-side surfaces
+
+The read-side endpoints overlap superficially but answer different questions. Reach for them in this order, depending on what you already know:
+
+- `GET /v1/capabilities` — **don't know the tag space yet.** "What kinds of tools does TrustGraph track?"
+- `POST /v1/discover` — **know the task, not the entity or tag.** "Which tool should I use for X?" Free-text query, no tag needed.
+- `POST /v1/rank` — **know the tag, want the strongest entity within it.** Best `web_search` provider by `cost`.
+- `GET /v1/profile` — **know the entity, want the snapshot.** Composite + dimensions + top failure modes + top tags in one round trip.
+- `POST /v1/retrieve` — **know the entity, want supporting evidence.** Rationales and failure modes for one specific entity.
 
 ## When to reach for each
 
@@ -93,6 +128,7 @@ curl -s "$TRUSTGRAPH_BASE_URL/v1/capabilities?sort=events&limit=20"
 | User: "Tell me about X" / "What do you have on X?" | `GET /v1/profile` |
 | User: "Is X good at Y?" (dimension-specific) | `GET /v1/profile`, then `POST /v1/retrieve` for rationales |
 | User: "Why has X been getting worse?" | `GET /v1/score/history` + `POST /v1/retrieve` |
+| User: "Which tool should I use for X?" (task is known, tool isn't) | `POST /v1/discover` |
 | User: "Who's the [cheapest/fastest/etc] provider of Z?" | `POST /v1/rank` |
 | User: "What capabilities have been rated lately?" | `GET /v1/capabilities` |
 | Agent (no prompt): score is ambiguous (0.4–0.7) before consuming | `POST /v1/retrieve` to read rationales and decide how cautiously to proceed |

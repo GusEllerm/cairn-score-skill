@@ -16,12 +16,13 @@ This file covers the procedural skeleton. Detailed reference material lives alon
 
 - `references/rubric.md` — score anchors, weight, structured fields, canonical dimensions, inversion rule
 - `references/examples.md` — four worked `/v1/scores` submissions across source types
-- `references/queries.md` — Workflow 3 endpoints (`/profile`, `/retrieve`, `/rank`, `/capabilities`) and the routing table
+- `references/queries.md` — Workflow 3 endpoints (`/profile`, `/retrieve`, `/rank`, `/capabilities`, `/discover`) and the routing table
 - `references/scoring-model.md` — decay and confidence accrual
 - `scripts/tg-score` — pre-check; prints one line `<composite> <confidence> <last_updated>`
 - `scripts/tg-rate` — appends a `/v1/scores` body (read from stdin) to a local queue; silent on success
 - `scripts/tg-flush` — submits the queued events as one batch via `/v1/scores/batch`; run at session end
 - `scripts/tg-retrieve` — compact retrieve; one header line + one line per event
+- `scripts/tg-discover` — free-text task → ranked entities; one header line + one line per hit
 - `scripts/mint-key.sh` — mints a TrustGraph API key (ephemeral by default, stable identity on request)
 
 The wrappers compress the per-call IO so the main thread never sees raw JSON. Use them by default; the raw `curl` shapes documented in the `references/` files are the fallback when you need a filter or option a wrapper doesn't expose.
@@ -157,12 +158,13 @@ scripts/tg-flush
 
 ## Workflow 3 — Investigating an entity with richer queries
 
-Four unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't:
+Five unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't:
 
 - `GET /v1/profile` — composite + all dimensions + top failure modes + top capability tags in one round trip. Use for "tell me about X" questions.
 - `POST /v1/retrieve` — past events for one entity, optionally ranked by similarity to a query. The RAG endpoint; use when you need rationales, not just numbers.
-- `POST /v1/rank` — cross-entity ranking by capability tag. The "who's the cheapest/fastest" lens.
-- `GET /v1/capabilities` — discover which capability tags have been rated.
+- `POST /v1/rank` — cross-entity ranking *within a known* `capability_tag`. The "who's the cheapest/fastest" lens.
+- `POST /v1/discover` — free-text task → ranked entities, no tag needed. The "which tool fits this task" lens; use when you know what you want done but not which entity / capability tag does it.
+- `GET /v1/capabilities` — list which capability tags have been rated; use when you don't yet know the tag space.
 
 **See `references/queries.md` for request shapes, response fields, filter options, and the routing table for which endpoint to call when a user asks a specific kind of question.**
 
