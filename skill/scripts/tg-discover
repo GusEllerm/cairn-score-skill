@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Free-text task description → ranked entities, grounded in actual reviewer
+# rationales. One header line + one line per hit.
+#
+# Usage: scripts/tg-discover QUERY [K]
+# Example: scripts/tg-discover "send a message to a slack channel" 5
+#       → # query="send a message to a slack channel" n_results=3
+#       → 0.81 capability mcp://slack comp=0.78 c=0.41 n=12 - Sent test message; clean response.
+#       → 0.76 capability mcp://discord-bot comp=0.65 c=0.25 n=4 - Posted to channel; minor formatting drift.
+#       → 0.62 data_source https://api.slack.com/methods/chat.postMessage comp=0.71 c=0.30 n=8 - Used postMessage endpoint successfully.
+#
+# Columns per hit: <best_similarity> <type> <external_id> comp=<composite> c=<confidence> n=<n_matching> <failure_modes> <truncated-rationale>
+# Rationales are truncated to 200 chars. Reads use no API key.
+
+set -euo pipefail
+command -v python3 >/dev/null || { echo "tg-discover: python3 required" >&2; exit 127; }
+
+: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+
+QUERY="${1:?usage: tg-discover QUERY [K]}"
+K="${2:-5}"
+
+BODY=$(python3 -c '
+import sys, json
+q, k = sys.argv[1:3]
+print(json.dumps({"query": q, "k": int(k)}))
+' "$QUERY" "$K")
+
+RESP=$(curl -sS -X POST "$TRUSTGRAPH_BASE_URL/v1/discover" \
+  -H "Content-Type: application/json" \
+  -d "$BODY")
+
+python3 -c '
+import sys, json
+data = json.loads(sys.stdin.read())
+if isinstance(data, dict) and "error" in data:
+    sys.exit("tg-discover: " + json.dumps(data["error"]))
+
+q = data.get("query", "")
+n = data.get("n_results", 0)
+print(f"# query={q!r} n_results={n}")
+
+for hit in data.get("results", []) or []:
+    ent = hit.get("entity") or {}
+    typ = ent.get("type", "?")
+    ext = ent.get("external_id", "?")
+    sim = hit.get("best_similarity")
+    sim_str = f"{sim:.2f}" if isinstance(sim, (int, float)) else "?"
+    nm = hit.get("n_matching", "?")
+
+    comp = hit.get("composite_score") or {}
+    v = comp.get("value")
+    cf = comp.get("confidence")
+    v_str = f"{v:.2f}" if isinstance(v, (int, float)) else "?"
+    cf_str = f"{cf:.2f}" if isinstance(cf, (int, float)) else "?"
+
+    evt = hit.get("best_event") or {}
+    fm = ",".join(evt.get("failure_modes") or []) or "-"
+    rat = (evt.get("rationale") or "").strip().replace("\n", " ")
+    if len(rat) > 200:
+        rat = rat[:197] + "..."
+    print(f"{sim_str} {typ} {ext} comp={v_str} c={cf_str} n={nm} {fm} {rat}")
+' <<< "$RESP"
