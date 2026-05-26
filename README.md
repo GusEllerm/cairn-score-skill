@@ -3,7 +3,7 @@
 Two surfaces over the same TrustGraph reputation API:
 
 - **`skill/`** — a Claude Code skill that rates every external resource your agent touches (WebFetch, WebSearch, MCP tools, curl invocations) **invisibly in the background** via `PostToolUse` hooks. The model never sees TrustGraph in chat.
-- **`mcp-server/`** — an MCP server that exposes the same trust capabilities to **Claude Desktop** (and any MCP-capable host: Cursor, Zed, Continue, the API directly) as six callable tools. The model chooses when to invoke; tool calls are visible in chat.
+- **`mcp-server/`** — an MCP server that exposes the same trust capabilities to **Claude Desktop** (and any MCP-capable host: Cursor, Zed, Continue, the API directly) as nine callable tools. The model chooses when to invoke; tool calls are visible in chat.
 
 Both surfaces share `~/.trustgraph/` state — same key file, same reviewer identity (first-mint-wins), so ratings accumulate under one signal regardless of which surface produced them.
 
@@ -26,9 +26,9 @@ To update later: `bash ~/code/trustgraph-skill/skill/update-skill.sh` (the scrip
 
 ## Claude Desktop (MCP server)
 
-The same TrustGraph capabilities are exposed under `mcp-server/` as a six-tool MCP server: `score`, `retrieve`, `rank`, `capabilities`, `get_rubric`, `rate`.
+The same TrustGraph capabilities are exposed under `mcp-server/` as a nine-tool MCP server: `score`, `retrieve`, `rank`, `capabilities`, `discover`, `score_batch`, `score_history`, `rate`, `get_rubric`.
 
-Unlike the skill — which hooks in invisibly on every tool call — MCP tool calls are visible in chat. The model decides when to invoke; the agent's standing context carries the tool descriptions (~1500 tokens for the six, ~500 of which is the rubric condensate embedded in `rate`).
+Unlike the skill — which hooks in invisibly on every tool call — MCP tool calls are visible in chat. The model decides when to invoke; the agent's standing context carries the tool descriptions (~2000 tokens for the nine, ~500 of which is the rubric condensate embedded in `rate`).
 
 ### Install (hand-edit JSON — recommended)
 
@@ -67,7 +67,9 @@ Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (mac
 }
 ```
 
-Replace both absolute paths with your clone location. Restart Claude Desktop after editing. Verify by opening the Desktop server-log panel — the `trustgraph` MCP should appear with all six tools listed.
+Replace both absolute paths with your clone location. Restart Claude Desktop after editing. Verify by opening the Desktop server-log panel — the `trustgraph` MCP should appear with all nine tools listed.
+
+If `uv` doesn't resolve in Desktop's launchd-spawned environment (you'll see a spawn error in the server log), replace `"command": "uv"` with the absolute path — find it with `which uv` and substitute, e.g. `/Users/you/.local/bin/uv`.
 
 The MCP shares `~/.trustgraph/api-key` with the Code skill via the refactored `mint-key.sh`, which owns read-or-mint-and-persist under `fcntl.flock`. First surface to mint owns the reviewer identity baked into the key; both surfaces accumulate ratings under that identity.
 
@@ -75,10 +77,13 @@ The MCP shares `~/.trustgraph/api-key` with the Code skill via the refactored `m
 
 | Tool | Purpose |
 |---|---|
-| `score(type, external_id, detail="summary"|"full")` | Reputation check before consuming a URL or MCP capability. `detail="full"` returns the combined profile (dimensions + top failure modes + top capability tags). |
+| `score(type, external_id, detail="summary"|"full")` | Reputation check before consuming a URL or MCP capability. `detail="full"` returns the combined profile (dimensions + top failure modes + top capability tags + LLM-generated `summary` when the entity has enough events — relay verbatim instead of re-synthesizing). |
+| `score_batch(refs)` | Batch trust lookup for up to 100 entity refs in one round trip. Use before fanning out across multiple sources/tools. |
+| `score_history(type, external_id, window, bucket)` | Time-bucketed score trend — the "is X getting worse?" lens. Pair with `retrieve(since=...)` to inspect the events behind a drop. |
 | `retrieve(type, external_id, query?, k, ...)` | Past events for one entity, optionally ranked by similarity to a query. Rationales truncated to 200 chars. |
-| `rank(capability_tag, rank_by, k, ...)` | Cross-entity ranking on a chosen dimension. The "who's the [adj]?" lens. |
-| `capabilities(limit)` | List rated capability tags with event and entity counts. |
+| `rank(capability_tag, rank_by, k, ...)` | Cross-entity ranking on a chosen dimension within a known capability tag. The "who's the [adj]?" lens. |
+| `discover(query, k, ...)` | Free-text task → ranked entities. The "which tool fits this task?" lens. Distinct from `rank` (which needs the tag upfront). |
+| `capabilities(limit)` | List rated capability tags with event and entity counts. Cold-start fallback when `discover` returns nothing. |
 | `get_rubric()` | Full scoring rubric: anchors, dimensions with inversion notes, weight semantics, examples. |
 | `rate(type, external_id, score, weight, ...)` | Submit a rating after consuming/invoking. Per-field validation: dimension key whitelist, metric key regex, snake_case tag normalization, reserved-prefix check. |
 
@@ -179,13 +184,13 @@ Repo layout:
 - `skill/references/examples.md` — four worked submissions
 - `skill/references/queries.md` — `/v1/profile`, `/v1/retrieve`, `/v1/rank`, `/v1/capabilities`
 - `skill/references/scoring-model.md` — decay + confidence accrual
-- `skill/scripts/tg-score` `tg-rate` `tg-flush` `tg-retrieve` — manual wrappers
+- `skill/scripts/tg-score` `tg-rate` `tg-flush` `tg-retrieve` `tg-score-batch` `tg-discover` `tg-history` — manual wrappers
 - `skill/scripts/tg-judge-and-rate` — rater (both backends)
 - `skill/scripts/tg-hook-postool` — PostToolUse hook entry point
 - `skill/scripts/mint-key.sh` — mint a TrustGraph API key (shared with the MCP server)
 - `skill/install.sh`, `skill/uninstall.sh`, `skill/update-skill.sh` — setup / removal / update
-- `mcp-server/` — TrustGraph MCP server (in progress; see `MCP-PLAN.md`)
-- `MCP-PLAN.md` — design plan for the MCP port (disposable scratch; removed once implementation lands)
+- `mcp-server/` — TrustGraph MCP server (9 tools; see `MCP-PLAN.md` for the original design, `MIGRATION-PLAN.md` for the post-upstream-API-evolution alignment work)
+- `MCP-PLAN.md`, `MIGRATION-PLAN.md` — design and migration plans for the MCP server
 
 ## Configuration
 
