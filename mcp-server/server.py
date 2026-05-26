@@ -461,20 +461,30 @@ async def _request(
 ) -> dict:
     client = ctx.request_context.lifespan_context.client
 
-    async def _one_attempt() -> httpx.Response:
-        return await client.request(method, path, params=params, json=json, headers=headers)
+    async def _one_attempt() -> tuple[httpx.Response | None, Exception | None]:
+        """Run one HTTP attempt. Return (response, None) on completion or
+        (None, exception) on a connection-level error."""
+        try:
+            return await client.request(method, path, params=params, json=json, headers=headers), None
+        except (httpx.TimeoutException, httpx.RequestError) as e:
+            return None, e
 
-    try:
-        resp = await _one_attempt()
-        if 500 <= resp.status_code < 600:
-            await asyncio.sleep(0.5)
-            resp = await _one_attempt()
-    except httpx.TimeoutException as e:
-        raise ToolError(
-            f"TrustGraph timed out — {method} {path} did not complete ({e})"
-        ) from None
-    except httpx.RequestError as e:
-        raise ToolError(f"TrustGraph network error — {method} {path}: {e}") from None
+    # One retry budget shared across 5xx responses AND connection errors
+    # (matches the documented "one retry on 5xx" intent — a 5xx surfacing as
+    # a TCP reset shouldn't bypass it).
+    resp, err = await _one_attempt()
+    should_retry = err is not None or (resp is not None and 500 <= resp.status_code < 600)
+    if should_retry:
+        await asyncio.sleep(0.5)
+        resp, err = await _one_attempt()
+
+    if err is not None:
+        if isinstance(err, httpx.TimeoutException):
+            raise ToolError(
+                f"TrustGraph timed out — {method} {path} did not complete ({err})"
+            ) from None
+        raise ToolError(f"TrustGraph network error — {method} {path}: {err}") from None
+    assert resp is not None  # err was None, resp must be set
 
     if resp.status_code == 429:
         retry_after = resp.headers.get("Retry-After", "?")

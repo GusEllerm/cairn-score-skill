@@ -44,7 +44,7 @@ Ordered low-risk → high-risk, additive changes before refactors, observability
 - Split `score` → `score` (always `/v1/score`) + `profile` (always `/v1/profile`). Update tool docstrings, models, smoke tests.
 - Make `ctx: Context[ServerSession, AppContext]` non-optional (drop `= None`). Delete the 8 `if ctx is None` guards.
 - Rename tool param `type` → `entity_type` (with alias if the schema name should stay `type` from the host perspective).
-- Move `rate` validation (reserved prefixes, dimension whitelist + regex, tag normalisation, metric regex) into a `RateInput` Pydantic model with `@model_validator`. Tool body becomes "validate → build body → submit".
+- ~~Move `rate` validation into a `RateInput` Pydantic model with `@model_validator`.~~ Reconsidered during Phase 3c — the refactor would mostly mirror existing validation code (~50 added lines for the model + validators, replacing ~50 procedural lines in the tool body) with no behavior change and no concrete reuse target (`rate_batch` doesn't exist). The current procedural validation is readable and co-located. Revisit if a `rate_batch` tool lands later.
 - `_request`: retry connection-level errors (`httpx.TimeoutException`, `RequestError`) on the same one-retry-after-0.5s budget as 5xx, matching the documented intent.
 
 **Smoke:** `mcp.list_tools()` should now show 10 tools. Each tool should still parse a real live response.
