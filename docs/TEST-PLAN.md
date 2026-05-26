@@ -149,8 +149,9 @@ Everything else (install / verify state / teardown commands) is now known to wor
 ### Smoke test (Desktop side)
 
 - [ ] **Fully quit** Claude Desktop (Cmd+Q on macOS) and reopen
-- [ ] In a new conversation, open the 🔌 / MCP indicator — `trustgraph` should show **10 tools**
-- [ ] Type `/` in compose — **`trustgraph-proactive`** should appear in the picker
+- [ ] **Settings → Connectors** (newer Desktop builds) or **Settings → Developer → MCP** (older) — `trustgraph` should appear with an active/green status and the 10 tools listed under it. If you don't see it, check `~/Library/Logs/Claude/mcp.log` for `[trustgraph] Server started and connected successfully` — a successful spawn means it's loaded; just look harder in the UI (some versions group MCPs under "Connectors → Custom" or similar).
+- [ ] Tool picker in compose — start a new conversation, look for the 🛠/tools icon. The trustgraph tools should be reachable from there (grouped by source).
+- [ ] Type `/` in compose — **`trustgraph-proactive`** should appear in the slash-command picker
 - [ ] Test prompt: **"Tell me about the trust profile of `data_source / canary://known-good`."** — expect `profile` to be called, summary returned
 
 ### Smoke test (Code side, parallel)
