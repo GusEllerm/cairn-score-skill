@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Discover entities by free-text task description. One header line + one line per hit.
+#
+# Usage: scripts/tg-discover QUERY [K] [INNER_POOL]
+# Example: scripts/tg-discover "send a message to a slack channel" 5
+#       → # query="send a message to a slack channel" n_results=5
+#       → 0.64 0.78 capability mcp://slack-server  Used /tools/send_message; clean response in 320ms; rate-limit headers honoured
+#       → 0.61 0.82 capability mcp://incoming-webhook  Posted to channel webhook; structured error envelope on rate limit
+#       → ...
+#
+# Columns: <similarity> <composite_score> <type> <external_id>  <truncated-rationale>
+# Rationales are truncated to 200 chars. Reads use no API key.
+#
+# Returns non-zero with the server's error envelope on 503
+# (embeddings-disabled mode — no fallback). When that happens, use
+# tg-score / tg-retrieve on known entities, or pair tg-rank with a
+# tag from /v1/capabilities instead.
+
+set -euo pipefail
+command -v python3 >/dev/null || { echo "tg-discover: python3 required" >&2; exit 127; }
+
+: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+
+QUERY="${1:?usage: tg-discover QUERY [K] [INNER_POOL]}"
+K="${2:-10}"
+INNER_POOL="${3:-50}"
+
+BODY=$(python3 -c '
+import sys, json
+q, k, inner = sys.argv[1:4]
+print(json.dumps({"query": q, "k": int(k), "inner_pool": int(inner)}))
+' "$QUERY" "$K" "$INNER_POOL")
+
+RESP=$(curl -sS -X POST "$TRUSTGRAPH_BASE_URL/v1/discover" \
+  -H "Content-Type: application/json" \
+  -d "$BODY")
+
+python3 -c '
+import sys, json
+data = json.loads(sys.stdin.read())
+if isinstance(data, dict) and "error" in data:
+    sys.exit("tg-discover: " + json.dumps(data["error"]))
+
+q = data.get("query", "")
+n = data.get("n_results", 0)
+print(f"# query={q!r} n_results={n}")
+
+for hit in data.get("results", []) or []:
+    sim = hit.get("best_similarity")
+    sim_str = f"{sim:.2f}" if isinstance(sim, (int, float)) else "?"
+    comp_obj = hit.get("composite_score") or {}
+    comp = comp_obj.get("value") if isinstance(comp_obj, dict) else None
+    comp_str = f"{comp:.2f}" if isinstance(comp, (int, float)) else "?"
+    ent = hit.get("entity") or {}
+    type_ = ent.get("type", "?")
+    ext = ent.get("external_id", "?")
+    be = hit.get("best_event") or {}
+    rat = (be.get("rationale") or "").strip().replace("\n", " ")
+    if len(rat) > 200:
+        rat = rat[:197] + "..."
+    print(f"{sim_str} {comp_str} {type_} {ext}  {rat}")
+' <<< "$RESP"
