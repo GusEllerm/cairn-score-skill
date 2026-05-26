@@ -161,7 +161,7 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Coexistence check
 
-- [ ] Both surfaces share `~/.trustgraph/keys/mep39camvm.us-east-1.awsapprunner.com.key` — i.e. one reviewer identity for ratings from both
+- [X] Both surfaces share `~/.trustgraph/keys/mep39camvm.us-east-1.awsapprunner.com.key` — i.e. one reviewer identity for ratings from both
   ```bash
   # The key file is LAZY-MINTED — it only appears the first time something
   # calls a write endpoint (Code-side: trigger a rate via the smoke above
@@ -176,12 +176,12 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Teardown
 
-- [ ] Code-side uninstall
+- [X] Code-side uninstall
   ```bash
   bash ~/.claude/skills/trustgraph/uninstall.sh
   rm -rf ~/.claude/skills/trustgraph
   ```
-- [ ] Desktop-side: remove the MCP entry
+- [X] Desktop-side: remove the MCP entry
   ```bash
   python3 -c "
   import json, os
@@ -192,11 +192,11 @@ Everything else (install / verify state / teardown commands) is now known to wor
   json.dump(c, open(p,'w'), indent=2); open(p,'a').write('\n')
   print('cleaned')"
   ```
-- [ ] Wipe runtime state
+- [X] Wipe runtime state
   ```bash
   rm -rf ~/.trustgraph
   ```
-- [ ] Restart Claude Desktop so it forgets the now-removed MCP
+- [X] Restart Claude Desktop so it forgets the now-removed MCP
 
 ---
 
@@ -206,13 +206,13 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Build
 
-- [ ] **Reset** (from pre-flight block)
-- [ ] Build the bundle
+- [X] **Reset** (from pre-flight block)
+- [X] Build the bundle
   ```bash
   cd /Users/gusellerm/Projects/trustgraph-skill/mcp-server && bash build-mcpb.sh
   ```
-- [ ] Expect output ending with `built ../dist/trustgraph.mcpb (<size>)`
-- [ ] Inspect what's inside (sanity)
+- [X] Expect output ending with `built ../dist/trustgraph.mcpb (<size>)`
+- [X] Inspect what's inside (sanity)
   ```bash
   unzip -l /Users/gusellerm/Projects/trustgraph-skill/dist/trustgraph.mcpb
   # expect: manifest.json, pyproject.toml, uv.lock, server.py, bundled/mint-key.sh
@@ -220,33 +220,33 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Install
 
-- [ ] Open the `.mcpb` in Claude Desktop
+- [X] Open the `.mcpb` in Claude Desktop
   ```bash
   open /Users/gusellerm/Projects/trustgraph-skill/dist/trustgraph.mcpb
   ```
-- [ ] Desktop's installer UI opens — review the tool list (10 tools), the prompt (1), and the user_config fields (deployment URL with the DNS-takeover note, debug log path)
-- [ ] Accept defaults and install
-- [ ] Desktop confirms install + may prompt to restart
+- [X] Desktop's installer UI opens — review the tool list (10 tools), the prompt (1), and the user_config fields (deployment URL with the DNS-takeover note, debug log path)
+- [X] Accept defaults and install
+- [X] Desktop confirms install + may prompt to restart
 
 ### Verify
 
-- [ ] In compose, MCP indicator shows `trustgraph` with **10 tools**
-- [ ] `/` picker shows `trustgraph-proactive`
-- [ ] Settings → Developer (or Extensions) shows `TrustGraph` as installed
+- [X] In compose, MCP indicator shows `trustgraph` with **10 tools**
+- [X] `/` picker shows `trustgraph-proactive`
+- [X] Settings → Developer (or Extensions) shows `TrustGraph` as installed
 
 ### Smoke
 
-- [ ] Pin the proactive prompt + test prompt: **"Tell me about the trust profile of `data_source / canary://known-good`."**
-- [ ] Verify it called `profile` and surfaced the LLM summary
+- [X] Pin the proactive prompt + test prompt: **"Tell me about the trust profile of `data_source / canary://known-good`."**
+- [X] Verify it called `profile` and surfaced the LLM summary
 
 ### Teardown
 
-- [ ] Uninstall via Desktop's Extensions UI (look for a remove/uninstall control on the TrustGraph entry)
-- [ ] Wipe runtime state
+- [X] Uninstall via Desktop's Extensions UI (look for a remove/uninstall control on the TrustGraph entry)
+- [X] Wipe runtime state
   ```bash
   rm -rf ~/.trustgraph
   ```
-- [ ] Restart Desktop
+- [X] Restart Desktop
 
 ---
 
@@ -256,20 +256,20 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Install
 
-- [ ] **Reset** (from pre-flight block)
-- [ ] Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` and merge the block from `README.md` "Fallback: hand-edit JSON" section
-- [ ] Make sure to use the absolute `uv` path (`which uv` value)
-- [ ] Validate JSON
+- [X] **Reset** (from pre-flight block)
+- [X] Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` and merge the block from `README.md` "Fallback: hand-edit JSON" section
+- [X] Make sure to use the absolute `uv` path (`which uv` value)
+- [X] Validate JSON
   ```bash
   python3 -c "import json; json.load(open('$HOME/Library/Application Support/Claude/claude_desktop_config.json')); print('valid')"
   ```
 
 ### Verify + smoke + teardown
 
-- [ ] Fully quit and reopen Claude Desktop
-- [ ] Verify same as Test C (10 tools, prompt selectable)
-- [ ] Smoke: canary profile test
-- [ ] Teardown: remove the JSON entry (same as Test B teardown) + wipe `~/.trustgraph`
+- [X] Fully quit and reopen Claude Desktop
+- [X] Verify same as Test C (10 tools, prompt selectable)
+- [X] Smoke: canary profile test
+- [X] Teardown: remove the JSON entry (same as Test B teardown) + wipe `~/.trustgraph`
 
 ---
 

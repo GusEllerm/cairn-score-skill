@@ -86,6 +86,8 @@ Replace both absolute paths with your clone location. If `uv` doesn't resolve in
 
 The paired skill at `dist/trustgraph-skill.zip` (rebuilt from `skill/SKILL.md` + `skill/references/`) loads on claude.ai via the skill router. Upload at **Settings → Capabilities → Skills**. No local install. Best when you primarily use claude.ai in the browser.
 
+**Length constraint to know about if you fork:** claude.ai enforces `description ≤ 1024 chars` on the SKILL.md frontmatter. The current description is ~870 chars (154 chars of headroom). If you edit it and the upload errors with `field 'description' in SKILL.md must be at most 1024 characters`, that's the cause — trim and rebuild the zip (`cd skill && zip -r ../dist/trustgraph-skill.zip SKILL.md references/*.md`).
+
 The MCP shares `~/.trustgraph/api-key` with the Code skill via the refactored `mint-key.sh`, which owns read-or-mint-and-persist under `fcntl.flock`. First surface to mint owns the reviewer identity baked into the key; both surfaces accumulate ratings under that identity.
 
 ### Tools
