@@ -3,7 +3,7 @@
 Two surfaces over the same TrustGraph reputation API:
 
 - **`skill/`** — a Claude Code skill that rates every external resource your agent touches (WebFetch, WebSearch, MCP tools, curl invocations) **invisibly in the background** via `PostToolUse` hooks. The model never sees TrustGraph in chat.
-- **`mcp-server/`** — an MCP server that exposes the same trust capabilities to **Claude Desktop** (and any MCP-capable host: Cursor, Zed, Continue, the API directly) as nine callable tools. The model chooses when to invoke; tool calls are visible in chat.
+- **`mcp-server/`** — an MCP server that exposes the same trust capabilities to **Claude Desktop** (and any MCP-capable host: Cursor, Zed, Continue, the API directly) as ten callable tools. The model chooses when to invoke; tool calls are visible in chat.
 
 Both surfaces share `~/.trustgraph/` state — same key file, same reviewer identity (first-mint-wins), so ratings accumulate under one signal regardless of which surface produced them.
 
@@ -26,9 +26,9 @@ To update later: `bash ~/code/trustgraph-skill/skill/update-skill.sh` (the scrip
 
 ## Claude Desktop (MCP server)
 
-The same TrustGraph capabilities are exposed under `mcp-server/` as a nine-tool MCP server: `score`, `retrieve`, `rank`, `capabilities`, `discover`, `score_batch`, `score_history`, `rate`, `get_rubric`.
+The same TrustGraph capabilities are exposed under `mcp-server/` as a ten-tool MCP server: `score`, `profile`, `retrieve`, `rank`, `capabilities`, `discover`, `score_batch`, `score_history`, `rate`, `get_rubric`.
 
-Unlike the skill — which hooks in invisibly on every tool call — MCP tool calls are visible in chat. The model decides when to invoke; the agent's standing context carries the tool descriptions (~2000 tokens for the nine, ~500 of which is the rubric condensate embedded in `rate`).
+Unlike the skill — which hooks in invisibly on every tool call — MCP tool calls are visible in chat. The model decides when to invoke; the agent's standing context carries the tool descriptions (~2200 tokens for the ten, ~500 of which is the rubric condensate embedded in `rate`).
 
 ### Install (hand-edit JSON — recommended)
 
@@ -56,7 +56,10 @@ Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (mac
         // non-throwaway use.
         // "TRUSTGRAPH_BASE_URL": "https://your-trustgraph-deployment.example",
 
-        // Optional: enable side log of every request/response (mode 0600).
+        // Optional: append-only JSONL side log of every request/response,
+        // mode 0o600. One line per call: ts, method, path, params, body
+        // keys, status, error, duration_ms. Mirror in tg-flush per chunk
+        // POST. Use when debugging "why isn't this working".
         // "TRUSTGRAPH_DEBUG_LOG": "/Users/you/.trustgraph/mcp-debug.log",
 
         // Not set here: TRUSTGRAPH_API_KEY (auto-minted on first `rate` call
@@ -67,7 +70,7 @@ Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (mac
 }
 ```
 
-Replace both absolute paths with your clone location. Restart Claude Desktop after editing. Verify by opening the Desktop server-log panel — the `trustgraph` MCP should appear with all nine tools listed.
+Replace both absolute paths with your clone location. Restart Claude Desktop after editing. Verify by opening the Desktop server-log panel — the `trustgraph` MCP should appear with all ten tools listed. For a deeper health check (key file, queue, rater backend, API reachability), run `bash skill/scripts/tg-doctor`.
 
 If `uv` doesn't resolve in Desktop's launchd-spawned environment (you'll see a spawn error in the server log), replace `"command": "uv"` with the absolute path — find it with `which uv` and substitute, e.g. `/Users/you/.local/bin/uv`.
 
@@ -77,15 +80,16 @@ The MCP shares `~/.trustgraph/api-key` with the Code skill via the refactored `m
 
 | Tool | Purpose |
 |---|---|
-| `score(type, external_id, detail="summary"|"full")` | Reputation check before consuming a URL or MCP capability. `detail="full"` returns the combined profile (dimensions + top failure modes + top capability tags + LLM-generated `summary` when the entity has enough events — relay verbatim instead of re-synthesizing). |
+| `score(type, external_id, context?, scorer?)` | Reputation check before consuming a URL or MCP capability — single composite/confidence/diagnostics in one call. The proactive pre-check. |
+| `profile(type, external_id, context?, top_failure_modes?, top_capability_tags?)` | Combined snapshot of one entity (dimensions + top failure modes + top capability tags + event counts + LLM-generated `summary` when the entity has enough events — **relay `summary.synthesis` verbatim instead of re-synthesizing**). |
 | `score_batch(refs)` | Batch trust lookup for up to 100 entity refs in one round trip. Use before fanning out across multiple sources/tools. |
 | `score_history(type, external_id, window, bucket)` | Time-bucketed score trend — the "is X getting worse?" lens. Pair with `retrieve(since=...)` to inspect the events behind a drop. |
-| `retrieve(type, external_id, query?, k, ...)` | Past events for one entity, optionally ranked by similarity to a query. Rationales truncated to 200 chars. |
+| `retrieve(type, external_id, query?, k, ...)` | Past events for one entity, optionally ranked by similarity to a query. Rationales + task truncated to 200 chars. |
 | `rank(capability_tag, rank_by, k, ...)` | Cross-entity ranking on a chosen dimension within a known capability tag. The "who's the [adj]?" lens. |
-| `discover(query, k, ...)` | Free-text task → ranked entities. The "which tool fits this task?" lens. Distinct from `rank` (which needs the tag upfront). |
+| `discover(query, k, ...)` | Free-text task → ranked entities. The "which tool fits this task?" lens. Distinct from `rank` (which needs the tag upfront). 503 → embeddings disabled (no fallback). |
 | `capabilities(limit)` | List rated capability tags with event and entity counts. Cold-start fallback when `discover` returns nothing. |
 | `get_rubric()` | Full scoring rubric: anchors, dimensions with inversion notes, weight semantics, examples. |
-| `rate(type, external_id, score, weight, ...)` | Submit a rating after consuming/invoking. Per-field validation: dimension key whitelist, metric key regex, snake_case tag normalization, reserved-prefix check. |
+| `rate(type, external_id, score, weight, ...)` | Submit a rating after consuming/invoking. Per-field validation: dimension keys snake-case-regex'd (any are accepted; canonical seven aggregate cross-reviewer), metric keys regex'd, snake_case tag normalization, reserved-prefix check. On 401: invalidates cached key, re-mints, retries once. |
 
 ### Shortcut alternative
 
@@ -185,12 +189,14 @@ Repo layout:
 - `skill/references/queries.md` — `/v1/profile`, `/v1/retrieve`, `/v1/rank`, `/v1/capabilities`
 - `skill/references/scoring-model.md` — decay + confidence accrual
 - `skill/scripts/tg-score` `tg-rate` `tg-flush` `tg-retrieve` `tg-score-batch` `tg-discover` `tg-history` — manual wrappers
+- `skill/scripts/tg-doctor` — one-shot install/runtime health check (key file, queue, rater backend, API reachability)
 - `skill/scripts/tg-judge-and-rate` — rater (both backends)
 - `skill/scripts/tg-hook-postool` — PostToolUse hook entry point
 - `skill/scripts/mint-key.sh` — mint a TrustGraph API key (shared with the MCP server)
 - `skill/install.sh`, `skill/uninstall.sh`, `skill/update-skill.sh` — setup / removal / update
-- `mcp-server/` — TrustGraph MCP server (9 tools; see `MCP-PLAN.md` for the original design, `MIGRATION-PLAN.md` for the post-upstream-API-evolution alignment work)
-- `MCP-PLAN.md`, `MIGRATION-PLAN.md` — design and migration plans for the MCP server
+- `mcp-server/` — TrustGraph MCP server (10 tools)
+- `mcp-server/openapi.snapshot.json` + `mcp-server/spec-check.sh` — drift guard against silent upstream API renames
+- `docs/MCP-PLAN.md`, `docs/MIGRATION-PLAN.md`, `docs/REVIEW-REPORT.md`, `docs/REVIEW-ACTION-PLAN.md` — historical design, migration, review, and action records
 
 ## Configuration
 
@@ -201,7 +207,9 @@ Repo layout:
 | `TG_ANTHROPIC_KEY_FILE` | `~/.trustgraph/anthropic-key` | Override the key-file path |
 | `TG_RATER_MODEL` | `claude-haiku-4-5-20251001` | Override the rater model |
 | `TRUSTGRAPH_BASE_URL` | `https://mep39camvm.us-east-1.awsapprunner.com` | Override if you run your own TrustGraph deployment |
-| `TRUSTGRAPH_API_KEY` | (auto-minted on first flush) | Persists at `~/.trustgraph/api-key` |
+| `TRUSTGRAPH_API_KEY` | (auto-minted on first flush) | Persists at `~/.trustgraph/keys/<host>.key` by default (URL-scoped so a key minted against one host isn't reused against another) |
+| `TRUSTGRAPH_MINT_SCRIPT` | (clone-relative `<server.py-dir>/../skill/scripts/mint-key.sh`) | Path to the read-or-mint-and-persist script the MCP shells out to |
+| `TRUSTGRAPH_DEBUG_LOG` | (unset → no log) | When set, append-only JSONL side log (mode 0o600) with one line per HTTP call from server.py + per chunk POST from tg-flush. Use when debugging "why isn't this working". |
 | `TRUSTGRAPH_QUEUE` | `~/.trustgraph/queue.jsonl` | Override the queue file location |
 | `TRUSTGRAPH_KEY_FILE` | `~/.trustgraph/api-key` | Override the persisted key location |
 | `TRUSTGRAPH_NESTED` | (unset) | Recursion guard. If `=1`, hooks bail out silently. Set automatically by `claude-cli` backend on its child process. |
