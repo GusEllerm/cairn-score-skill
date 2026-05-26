@@ -53,8 +53,10 @@ BRIEFING=$(cat)
 [[ -n "$BRIEFING" ]] || { echo "tg-judge-and-rate: empty briefing on stdin" >&2; exit 2; }
 
 # Resolve ANTHROPIC_API_KEY (env → key file → empty).
+# `read -r` (vs `$(<file)`) drops the trailing newline that text editors auto-
+# append, otherwise the newline ends up inside the X-Api-Key header → 401.
 if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ -s "$TG_ANTHROPIC_KEY_FILE" ]]; then
-  ANTHROPIC_API_KEY=$(<"$TG_ANTHROPIC_KEY_FILE")
+  IFS= read -r ANTHROPIC_API_KEY < "$TG_ANTHROPIC_KEY_FILE"
 fi
 
 # Resolve TG_RATER_BACKEND when "auto".

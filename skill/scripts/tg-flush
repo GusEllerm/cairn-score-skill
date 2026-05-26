@@ -30,9 +30,22 @@ command -v python3 >/dev/null || { echo "tg-flush: python3 required" >&2; exit 1
 if [[ -z "${TRUSTGRAPH_API_KEY:-}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
   export TRUSTGRAPH_KEY_FILE TRUSTGRAPH_BASE_URL
-  TRUSTGRAPH_API_KEY=$(bash "$SCRIPT_DIR/mint-key.sh")
+  TRUSTGRAPH_API_KEY=$(bash "$SCRIPT_DIR/mint-key.sh") || {
+    echo "tg-flush: mint-key.sh failed; queue NOT submitted" >&2
+    exit 1
+  }
   export TRUSTGRAPH_API_KEY
 fi
+
+# Take exclusive lock on the queue file so concurrent tg-rate appends don't
+# race with our read/parse/POST/unlink cycle. Without this, an event written
+# between our read and our unlink is silently lost. Same OFD-dup pattern as
+# tg-rate and mint-key.sh; trap releases on EXIT, kernel on SIGKILL.
+LOCK="${TRUSTGRAPH_QUEUE}.lock"
+mkdir -p "$(dirname "$LOCK")"
+exec 9>"$LOCK"
+trap 'exec 9>&-' EXIT
+python3 -c 'import fcntl,sys; fcntl.flock(sys.stdin.fileno(), fcntl.LOCK_EX)' <&9
 
 [[ -s "$TRUSTGRAPH_QUEUE" ]] || exit 0
 
@@ -106,6 +119,7 @@ def normalize_event(ev):
 
 with open(queue_path) as f:
     events = []
+    dead_lines = []
     for line in f:
         line = line.strip()
         if not line:
@@ -113,8 +127,17 @@ with open(queue_path) as f:
         try:
             events.append(normalize_event(json.loads(line)))
         except json.JSONDecodeError:
-            # Drop unparseable lines silently; they would have failed validation anyway.
-            continue
+            # Stash unparseable lines to queue.dead instead of silently
+            # dropping — a partial tg-rate append (process killed mid-line,
+            # disk full, etc.) is otherwise invisible.
+            dead_lines.append(line)
+
+if dead_lines:
+    dead_path = queue_path + ".dead"
+    with open(dead_path, "a") as f:
+        for line in dead_lines:
+            f.write(line + "\n")
+    sys.stderr.write(f"tg-flush: dropped {len(dead_lines)} corrupted line(s) to {dead_path}\n")
 
 if not events:
     os.unlink(queue_path)

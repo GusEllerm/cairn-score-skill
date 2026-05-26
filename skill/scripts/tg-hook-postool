@@ -121,9 +121,13 @@ if [[ -z "$BRIEFING" ]]; then
   exit 0
 fi
 
-# Pipe to the rater. Suppress its stderr into the log so the agent never sees it.
-{
-  echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] tg-hook-postool: dispatching briefing"
+# Spawn the rater detached: claude-cli rater can take ~20s, and even with
+# `async: true` in settings the hook process itself stays resident for that
+# whole time. `( ) & disown` lets the hook return immediately while the rater
+# continues in the background; output still lands in hook.log for diagnosis.
+(
+  echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] tg-hook-postool: dispatching briefing (async)"
   echo "$BRIEFING" | "$SKILL_DIR/scripts/tg-judge-and-rate" 2>&1
   echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] tg-hook-postool: rater exited $?"
-} >> "$LOG" 2>&1 || true
+) >> "$LOG" 2>&1 &
+disown

@@ -28,6 +28,16 @@ mkdir -p "$(dirname "$TRUSTGRAPH_QUEUE")"
 # Read stdin BEFORE the heredoc — heredocs replace stdin.
 INPUT=$(cat)
 
+# Take exclusive lock on the queue file so concurrent tg-rate appends and a
+# tg-flush read/unlink cycle serialize. Without this, an event written
+# between flush's read and its unlink is silently dropped. fd 9 held by this
+# shell; the inline python3 takes flock on the same OFD via <&9; trap closes
+# fd 9 on EXIT (kernel does the same on SIGKILL via fd reap).
+LOCK="${TRUSTGRAPH_QUEUE}.lock"
+exec 9>"$LOCK"
+trap 'exec 9>&-' EXIT
+python3 -c 'import fcntl,sys; fcntl.flock(sys.stdin.fileno(), fcntl.LOCK_EX)' <&9
+
 # Validate, normalize, re-emit compactly.
 INPUT="$INPUT" python3 <<'PY' >> "$TRUSTGRAPH_QUEUE"
 import os, sys, json, re, math

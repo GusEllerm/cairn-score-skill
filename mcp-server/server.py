@@ -436,8 +436,20 @@ async def _load_api_key(app_ctx: AppContext) -> str:
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        err = stderr.decode(errors="replace").strip() or "(no stderr)"
-        raise ToolError(f"mint-key.sh failed (exit {proc.returncode}): {err}")
+        # Classify the failure mode so the agent sees a one-line summary
+        # rather than the raw subprocess stderr.
+        err_text = stderr.decode(errors="replace").strip()
+        if proc.returncode == 127:
+            msg = "mint-key.sh failed: missing python3 or curl on PATH"
+        elif "curl:" in err_text or "Could not resolve host" in err_text:
+            msg = "mint-key.sh failed: TrustGraph API unreachable (network error)"
+        elif "mint failed" in err_text or "mint response" in err_text:
+            msg = f"mint-key.sh failed: server rejected the mint request ({err_text.splitlines()[-1][:120]})"
+        else:
+            # Fallback: keep stderr but cap and scrub to keep it one line.
+            first_line = err_text.splitlines()[-1] if err_text else "(no stderr)"
+            msg = f"mint-key.sh failed (exit {proc.returncode}): {first_line[:200]}"
+        raise ToolError(_scrub_secrets(msg))
     key = stdout.decode().strip()
     if not key:
         raise ToolError("mint-key.sh succeeded but returned empty output")
@@ -492,17 +504,33 @@ async def _request(
             f"TrustGraph 429 rate-limited; Retry-After: {retry_after} (no client retry)"
         )
 
+    if resp.status_code == 401:
+        # Typed exception so callers (rate) can catch and retry once with a
+        # freshly minted key — the cached one may be revoked.
+        raise _UnauthorizedError("TrustGraph 401 unauthorized (key invalid or revoked)")
+
     if resp.status_code >= 400:
-        body_excerpt = _scrub_secrets(resp.text[:500])
-        try:
-            err = (resp.json() or {}).get("error") or {}
-            code = err.get("code") or "unknown"
-            msg = _scrub_secrets(err.get("message") or body_excerpt)
-            raise ToolError(f"TrustGraph {resp.status_code} {code}: {msg}")
-        except ValueError:
-            raise ToolError(f"TrustGraph {resp.status_code}: {body_excerpt}")
+        _raise_for_response(resp)
 
     return resp.json()
+
+
+class _UnauthorizedError(Exception):
+    """Raised by _request on 401 so callers can invalidate + re-mint + retry."""
+
+
+def _raise_for_response(resp: "httpx.Response", tool_name: str = "TrustGraph") -> None:
+    """Convert a non-2xx response to a ToolError using the standard envelope.
+    Used by _request and by tools that bypass _request for custom handling
+    (e.g. discover with its 503 special case)."""
+    body_excerpt = _scrub_secrets(resp.text[:500])
+    try:
+        err = (resp.json() or {}).get("error") or {}
+        code = err.get("code") or "unknown"
+        msg = _scrub_secrets(err.get("message") or body_excerpt)
+        raise ToolError(f"{tool_name} {resp.status_code} {code}: {msg}")
+    except ValueError:
+        raise ToolError(f"{tool_name} {resp.status_code}: {body_excerpt}")
 
 
 # ---- Secret + free-text scrubbers ----
@@ -833,8 +861,25 @@ async def discover(
     surface the top hits with `best_similarity` and the matching
     rationale.
     """
+    # Bypass _request's generic 5xx retry: 503 from discover is deterministic
+    # (embeddings disabled — no vector index to query) and a retry wastes a
+    # round trip. Handle the status check inline + reuse _raise_for_response
+    # for other 4xx/5xx so we don't duplicate the error-envelope parsing.
+    client = ctx.request_context.lifespan_context.client
     body = {"query": query, "k": k, "inner_pool": inner_pool}
-    data = await _request(ctx, "POST", "/v1/discover", json=body)
+    try:
+        resp = await client.post("/v1/discover", json=body)
+    except (httpx.TimeoutException, httpx.RequestError) as e:
+        raise ToolError(f"discover network error: {e}") from None
+    if resp.status_code == 503:
+        raise ToolError(
+            "discover unavailable: TrustGraph deployment has embeddings "
+            "disabled (no vector index). Use capabilities() to browse the "
+            "tag space, then rank() within a chosen tag."
+        )
+    if resp.status_code >= 400:
+        _raise_for_response(resp, "discover")
+    data = resp.json()
     result = DiscoverResult.model_validate(data)
     # Each hit's best_event.rationale + task are reviewer-supplied free text
     # surfaced verbatim to the agent — cap to RATIONALE_TRUNCATE like retrieve.
@@ -1110,13 +1155,33 @@ async def rate(
             body["metrics"] = cleaned_metrics
 
     # 6. Load API key (lazy mint via mint-key.sh) and submit.
+    # On 401 (key invalid or revoked out-of-band), invalidate the cached
+    # key, re-mint once, and retry — otherwise the server would keep failing
+    # every rate call for the lifetime of the MCP process until Desktop
+    # restart. The 401 path is the only place the cached key gets cleared.
     app_ctx = ctx.request_context.lifespan_context
     api_key = await _load_api_key(app_ctx)
-    data = await _request(
-        ctx, "POST", "/v1/scores",
-        json=body,
-        headers={"X-Api-Key": api_key},
-    )
+    try:
+        data = await _request(
+            ctx, "POST", "/v1/scores",
+            json=body,
+            headers={"X-Api-Key": api_key},
+        )
+    except _UnauthorizedError:
+        app_ctx.api_key = None
+        api_key = await _load_api_key(app_ctx)
+        try:
+            data = await _request(
+                ctx, "POST", "/v1/scores",
+                json=body,
+                headers={"X-Api-Key": api_key},
+            )
+        except _UnauthorizedError:
+            raise ToolError(
+                "rate failed: fresh mint also rejected with 401 — likely an "
+                "API-side problem (revoked at the per-IP cohort level, or "
+                "the deployment is misconfigured). Tell the user."
+            ) from None
     return RateResult.model_validate(data or {})
 
 
