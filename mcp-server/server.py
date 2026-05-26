@@ -8,7 +8,10 @@ pending. See MCP-PLAN.md (rev 5) for the full design.
 # Stdio hygiene: third-party imports may print() during initialization,
 # corrupting JSON-RPC frames on stdout. Redirect stdout to stderr across the
 # import block, then restore so the SDK's stdio_server can own stdout.
+import json as _json  # for debug_log; the parameter `json` shadows the stdlib module
 import sys
+import time
+from datetime import datetime, timezone
 
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
@@ -392,14 +395,54 @@ class AppContext:
     """Shared lifespan context for all tools."""
     client: httpx.AsyncClient
     api_key: str | None = None  # lazy-loaded on first rate call (Phase 4)
+    debug_log_fd: int | None = None  # opt-in via TRUSTGRAPH_DEBUG_LOG (Phase 5)
 
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     base_url = os.environ.get("TRUSTGRAPH_BASE_URL", DEFAULT_BASE_URL)
     timeout = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=5.0)
-    async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
-        yield AppContext(client=client)
+
+    # Opt-in side-log of every request/response, append-only JSONL, mode 0600.
+    # Explicit os.open() is required so the file is never observed at the
+    # umask default of 0644 — would otherwise land in Time Machine / iCloud-
+    # synced backups as world-readable per MCP-PLAN.md:289.
+    debug_log_fd: int | None = None
+    debug_path = os.environ.get("TRUSTGRAPH_DEBUG_LOG")
+    if debug_path:
+        debug_path = os.path.expanduser(debug_path)
+        os.makedirs(os.path.dirname(debug_path) or ".", exist_ok=True)
+        debug_log_fd = os.open(
+            debug_path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o600,
+        )
+
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
+            yield AppContext(client=client, debug_log_fd=debug_log_fd)
+    finally:
+        if debug_log_fd is not None:
+            os.close(debug_log_fd)
+
+
+def _debug_log(app_ctx: AppContext, entry: dict) -> None:
+    """Append one JSONL entry to TRUSTGRAPH_DEBUG_LOG if enabled. No-op
+    when the log isn't configured. Failures are silent — debugging the
+    debug log shouldn't blow up the server."""
+    if app_ctx.debug_log_fd is None:
+        return
+    try:
+        line = _json.dumps(entry, separators=(",", ":"), default=str) + "\n"
+        os.write(app_ctx.debug_log_fd, line.encode("utf-8"))
+    except Exception:
+        pass
+
+
+def _ts() -> str:
+    """Current time as ISO-8601 millis in UTC, ending with `Z`."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
+        f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
 
 
 mcp = FastMCP("trustgraph", lifespan=lifespan)
@@ -471,7 +514,8 @@ async def _request(
     json: dict | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict:
-    client = ctx.request_context.lifespan_context.client
+    app_ctx = ctx.request_context.lifespan_context
+    client = app_ctx.client
 
     async def _one_attempt() -> tuple[httpx.Response | None, Exception | None]:
         """Run one HTTP attempt. Return (response, None) on completion or
@@ -484,11 +528,27 @@ async def _request(
     # One retry budget shared across 5xx responses AND connection errors
     # (matches the documented "one retry on 5xx" intent — a 5xx surfacing as
     # a TCP reset shouldn't bypass it).
+    t0 = time.monotonic()
     resp, err = await _one_attempt()
     should_retry = err is not None or (resp is not None and 500 <= resp.status_code < 600)
     if should_retry:
         await asyncio.sleep(0.5)
         resp, err = await _one_attempt()
+    duration_ms = round((time.monotonic() - t0) * 1000, 2)
+
+    # Opt-in JSONL debug log — one line per call, success OR error. Body keys
+    # only (no values) to avoid logging user-supplied content like rationale.
+    _debug_log(app_ctx, {
+        "ts": _ts(),
+        "method": method,
+        "path": path,
+        "params": params,
+        "body_keys": sorted(json.keys()) if isinstance(json, dict) else None,
+        "status": resp.status_code if resp is not None else None,
+        "error": type(err).__name__ if err is not None else None,
+        "retried": should_retry,
+        "duration_ms": duration_ms,
+    })
 
     if err is not None:
         if isinstance(err, httpx.TimeoutException):
@@ -865,12 +925,31 @@ async def discover(
     # (embeddings disabled — no vector index to query) and a retry wastes a
     # round trip. Handle the status check inline + reuse _raise_for_response
     # for other 4xx/5xx so we don't duplicate the error-envelope parsing.
-    client = ctx.request_context.lifespan_context.client
+    app_ctx = ctx.request_context.lifespan_context
+    client = app_ctx.client
     body = {"query": query, "k": k, "inner_pool": inner_pool}
+    t0 = time.monotonic()
     try:
         resp = await client.post("/v1/discover", json=body)
+        err = None
     except (httpx.TimeoutException, httpx.RequestError) as e:
-        raise ToolError(f"discover network error: {e}") from None
+        resp = None
+        err = e
+    duration_ms = round((time.monotonic() - t0) * 1000, 2)
+    _debug_log(app_ctx, {
+        "ts": _ts(),
+        "method": "POST",
+        "path": "/v1/discover",
+        "params": None,
+        "body_keys": sorted(body.keys()),
+        "status": resp.status_code if resp is not None else None,
+        "error": type(err).__name__ if err is not None else None,
+        "retried": False,
+        "duration_ms": duration_ms,
+    })
+    if err is not None:
+        raise ToolError(f"discover network error: {err}") from None
+    assert resp is not None  # err was None
     if resp.status_code == 503:
         raise ToolError(
             "discover unavailable: TrustGraph deployment has embeddings "

@@ -53,11 +53,41 @@ TRUSTGRAPH_BASE_URL="$TRUSTGRAPH_BASE_URL" \
 TRUSTGRAPH_API_KEY="$TRUSTGRAPH_API_KEY" \
 TRUSTGRAPH_QUEUE="$TRUSTGRAPH_QUEUE" \
 python3 <<'PY'
-import sys, os, json, re, math, urllib.request, urllib.error
+import sys, os, json, re, math, time, urllib.request, urllib.error
+from datetime import datetime, timezone
 
 base = os.environ["TRUSTGRAPH_BASE_URL"]
 key = os.environ["TRUSTGRAPH_API_KEY"]
 queue_path = os.environ["TRUSTGRAPH_QUEUE"]
+
+# Opt-in JSONL side-log mirroring TRUSTGRAPH_DEBUG_LOG in the MCP server.
+# One line per chunk POST. Same explicit os.open(..., 0o600) pattern so the
+# log is never observed at world-readable mode.
+debug_path = os.environ.get("TRUSTGRAPH_DEBUG_LOG")
+debug_fd = None
+if debug_path:
+    debug_path = os.path.expanduser(debug_path)
+    os.makedirs(os.path.dirname(debug_path) or ".", exist_ok=True)
+    debug_fd = os.open(debug_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+
+def _log_chunk(chunk_idx, n_events, status, err_str, duration_ms):
+    if debug_fd is None:
+        return
+    now = datetime.now(timezone.utc)
+    entry = {
+        "ts": now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z",
+        "method": "POST",
+        "path": "/v1/scores/batch",
+        "chunk_index": chunk_idx,
+        "n_events": n_events,
+        "status": status,
+        "error": err_str,
+        "duration_ms": duration_ms,
+    }
+    try:
+        os.write(debug_fd, (json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8"))
+    except Exception:
+        pass
 
 TAG_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -171,21 +201,37 @@ for i in range(0, N, CHUNK):
         },
         method="POST",
     )
+    t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read()
+            dur = round((time.monotonic() - t0) * 1000, 2)
+            _log_chunk(i // CHUNK, len(chunk), resp.status, None, dur)
             if body:
                 data = json.loads(body)
                 if isinstance(data, dict) and "error" in data:
                     rewrite_queue(events[i:])
                     sys.exit(f"tg-flush: chunk {i // CHUNK} failed: {data['error']}")
     except urllib.error.HTTPError as e:
+        dur = round((time.monotonic() - t0) * 1000, 2)
+        body_str = e.read().decode(errors='replace')
+        _log_chunk(i // CHUNK, len(chunk), e.code, f"HTTPError {e.code}", dur)
         rewrite_queue(events[i:])
-        sys.exit(f"tg-flush: HTTP {e.code} on chunk {i // CHUNK}: {e.read().decode(errors='replace')}")
+        sys.exit(f"tg-flush: HTTP {e.code} on chunk {i // CHUNK}: {body_str}")
     except urllib.error.URLError as e:
+        dur = round((time.monotonic() - t0) * 1000, 2)
+        _log_chunk(i // CHUNK, len(chunk), None, f"URLError: {e.reason}", dur)
         rewrite_queue(events[i:])
         sys.exit(f"tg-flush: network error on chunk {i // CHUNK}: {e.reason}")
 
 # All chunks succeeded.
 os.unlink(queue_path)
+# Sentinel for tg-doctor to surface "last successful flush" without
+# parsing the debug log.
+sentinel = os.path.join(os.path.dirname(queue_path) or ".", "last-flush")
+try:
+    with open(sentinel, "w") as f:
+        f.write(str(int(time.time())))
+except Exception:
+    pass
 PY
