@@ -40,12 +40,7 @@
     {"name": "rate",           "description": "Submit a rating after consuming/invoking (auto-mints + caches the API key on first call)"},
     {"name": "get_rubric",     "description": "Full scoring rubric: anchors, dimensions with inversion notes, weight semantics, examples"}
   ],
-  "prompts": [
-    {
-      "name": "trustgraph-proactive",
-      "description": "Pin at conversation start to fire score before / rate after non-trivial fetches/tool-calls — the closest analog to the Code skill's PostToolUse hooks inside Desktop's UX."
-    }
-  ],
+  "prompts_generated": true,
   "compatibility": {
     "claude_desktop": ">=0.10.0",
     "platforms": ["darwin", "linux", "win32"],

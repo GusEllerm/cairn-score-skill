@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Remove the trustgraph hook entries from ~/.claude/settings.json.
+# Remove the trustgraph hook entries AND the TG_RATER_BACKEND env entry
+# from ~/.claude/settings.json — the two pieces install.sh puts there.
 #
 # Leaves alone:
 #   - The skill files in ~/.claude/skills/trustgraph/ (rm -rf yourself if you also want them gone)
@@ -66,11 +67,22 @@ for event in list(hooks.keys()):
 if not hooks:
     data.pop("hooks", None)
 
+# Also strip the TG_RATER_BACKEND env entry install.sh added (it's
+# trustgraph-specific; safe to remove unconditionally). ANTHROPIC_API_KEY
+# is NOT in settings.json env per the install design (lives in a separate
+# file) so there's nothing to do for it here.
+env = data.get("env", {})
+env_removed = env.pop("TG_RATER_BACKEND", None)
+if not env:
+    data.pop("env", None)
+
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 
 print(f"  removed {total} trustgraph hook entr{'y' if total == 1 else 'ies'} from {settings_path}")
+if env_removed is not None:
+    print(f"  removed env TG_RATER_BACKEND={env_removed!r}")
 PY
 
 echo

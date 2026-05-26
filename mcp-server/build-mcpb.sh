@@ -7,7 +7,9 @@
 # Output: ../dist/trustgraph.mcpb (gitignored — built per release).
 #
 # Prereqs:
-#   - npm i -g @anthropic-ai/mcpb   (provides the `mcpb` CLI)
+#   - npm + npx on PATH (Node ≥ 18). Either `mcpb` already installed
+#     globally (`npm i -g @anthropic-ai/mcpb`) OR npx, which will fetch
+#     the package transiently — no global install needed.
 #   - A sibling skill/ directory containing scripts/mint-key.sh
 #
 # What it does:
@@ -26,9 +28,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-if ! command -v mcpb >/dev/null; then
-  echo "build-mcpb.sh: 'mcpb' CLI not on PATH" >&2
-  echo "  install with: npm i -g @anthropic-ai/mcpb" >&2
+# Pick the cheapest available mcpb invocation: global if present, else npx.
+if command -v mcpb >/dev/null; then
+  MCPB=(mcpb)
+elif command -v npx >/dev/null; then
+  echo "  (using npx; install globally with 'npm i -g @anthropic-ai/mcpb' to skip the cold-cache fetch)"
+  MCPB=(npx -y --package @anthropic-ai/mcpb mcpb)
+else
+  echo "build-mcpb.sh: neither 'mcpb' nor 'npx' on PATH" >&2
+  echo "  install Node ≥ 18 (https://nodejs.org), then either:" >&2
+  echo "    npm i -g @anthropic-ai/mcpb     # global install" >&2
+  echo "    # or just rely on the npx route once Node is installed" >&2
   exit 127
 fi
 
@@ -52,7 +62,7 @@ OUT_DIR="../dist"
 OUT_FILE="$OUT_DIR/trustgraph.mcpb"
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_FILE"
-mcpb pack . "$OUT_FILE"
+"${MCPB[@]}" pack . "$OUT_FILE"
 
 # 4. Report
 size=$(du -h "$OUT_FILE" | cut -f1)
@@ -60,4 +70,4 @@ echo
 echo "  ✓ built $OUT_FILE ($size)"
 echo
 echo "  Install: drag $OUT_FILE onto Claude Desktop, or open it from Finder."
-echo "  Inspect manifest: mcpb info $OUT_FILE"
+echo "  Inspect manifest: ${MCPB[*]} info $OUT_FILE"

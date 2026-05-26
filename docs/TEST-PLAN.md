@@ -6,6 +6,33 @@ Six install paths to exercise end-to-end. Tick boxes as you go. Each test is sel
 
 ---
 
+## AI-run pre-pass (2026-05-26)
+
+Sandbox-runnable steps were exercised end-to-end before this checklist landed in the user's hands. Three real bugs surfaced and were fixed in the same session — without those fixes, several of the steps below would have failed:
+
+| Bug | Where | Fix |
+|---|---|---|
+| `uninstall.sh` left `TG_RATER_BACKEND` env entry in `~/.claude/settings.json` | `skill/uninstall.sh` | Now strips the env entry along with the hooks |
+| `mcpb pack` rejected our `manifest.json` (`prompts.0.text: Required` — static prompts need inline text, can't just point at the runtime `@mcp.prompt`) | `mcp-server/manifest.json` | Switched to `prompts_generated: true` — runtime registration via the MCP protocol still serves the `trustgraph-proactive` prompt; the install UI just won't show it statically. Future-work: extract prompt text into a shared source-of-truth file and embed in both `server.py` + the manifest. |
+| `build-mcpb.sh` required `mcpb` to be globally installed (`npm i -g`) | `mcp-server/build-mcpb.sh` | Now falls back to `npx -y --package @anthropic-ai/mcpb mcpb …` so no global install needed |
+
+**What the AI pass actually verified (so you don't need to repeat):**
+
+| Test | Install | Verify | Smoke | Teardown |
+|---|---|---|---|---|
+| A — `install.sh` | ✓ | ✓ files + hooks + tg-doctor | ⊘ needs Code session | ✓ (after env-fix) |
+| B — `install.sh --desktop` | ✓ | ✓ Code + Desktop entry + tg-doctor + spawn pre-flight | ⊘ needs Code + Desktop sessions | ✓ (after env-fix) |
+| C — `.mcpb` build | ✓ via npx | ✓ bundle layout + manifest content | ⊘ needs Desktop UI to drag/install | n/a (build artifact only) |
+| D — hand-edit JSON | ✓ | ✓ JSON validates + spawn command pre-flight succeeds | ⊘ needs Desktop session | ✓ |
+| E — claude.ai zip | ✓ rebuild | ✓ contents (5 files, 39KB) | ⊘ needs claude.ai upload UI | n/a |
+| F — coexistence (file-level) | ✓ via B | ✓ URL-scoped key path, `mint-key.sh` cache + `--remint`, debug log mode 0o600 + JSONL format, spec-check clean | ⊘ cross-surface rate test needs both Code + Desktop sessions | ✓ |
+
+**What's left for you to do** (the ⊘ items above): the actual model-driven smoke prompts in Tests A, B, C, D, F. Each of those needs a real Claude session — opening Claude Code or Desktop, typing the test prompt, observing the model's tool-call behavior. Those are the only steps that can't be done from a script.
+
+Everything else (install / verify state / teardown commands) is now known to work, on this machine, on this commit.
+
+---
+
 ## Pre-flight (once, before starting)
 
 - [ ] Repo cloned and current
