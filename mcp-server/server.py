@@ -379,7 +379,7 @@ RUBRIC = Rubric(
         "qualitative judgment. 'burned ~18k tokens vs ~10k baseline → 0.3' "
         "beats 'token-heavy → 0.3'."
     ),
-    rationale_cap_chars=500,
+    rationale_cap_chars=2000,
     notes=[
         "Use the full 0–1 range; do not cluster at 0.5 or 0.8.",
         "Weight is evidence quality, not score uncertainty — uncertain about the score? Pick 0.5. Don't lower weight for that.",
@@ -841,6 +841,11 @@ async def rank(
     All dimensions are higher-is-better — `cost=0.9` means cheap,
     `latency=0.9` means fast, `token_efficiency=0.9` means frugal.
 
+    **If you have a task description but don't know which
+    `capability_tag` covers it**, call `discover(query=...)` first —
+    it ranks entities by semantic match without needing the tag, and
+    each hit carries the matching rationale so you can see why.
+
     Skip for single-entity reputation questions (use `score` instead),
     or when the user is asking about something other than ranking.
 
@@ -876,10 +881,17 @@ async def capabilities(
     """List capability tags that have been rated across the corpus, with event and entity counts.
 
     Trigger: user asks "what's been rated?", "what kinds of tools do
-    you have data on?", or you need to discover which tags exist
-    before deciding on a `rank` query.
+    you have data on?", or you need to browse the tag space before
+    deciding on a `rank` query.
 
-    Skip if you already know the tag you want to rank by.
+    **Pick the right read-side tool:**
+    - Browsing tag space cold? → `capabilities` (this tool)
+    - Know the task, not the tag? → `discover` (free-text → entities)
+    - Know the tag, want the top entity? → `rank`
+    - Know the entity, want evidence? → `retrieve`
+
+    Skip this if you already know the tag you want to rank by, or if
+    you have a task description in mind (call `discover` directly).
 
     Example: user asks "what tools do you have reputation data on?" —
     call `capabilities()` and surface the top few tags with their
@@ -1101,7 +1113,7 @@ async def rate(
     score: Annotated[float, Field(ge=0, le=1, description="Holistic 0–1 rating")],
     weight: Annotated[float, Field(gt=0, le=1)] = 1.0,
     task: Annotated[str | None, Field(max_length=500)] = None,
-    rationale: Annotated[str | None, Field(max_length=500)] = None,
+    rationale: Annotated[str | None, Field(max_length=2000)] = None,
     dimensions: dict[str, float] | None = None,
     failure_modes: Annotated[list[str] | None, Field(max_length=10)] = None,
     metrics: dict[str, float] | None = None,
@@ -1151,7 +1163,7 @@ async def rate(
       Weight is evidence quality, not score uncertainty — uncertain
       about the score? Pick 0.5. Don't lower weight for that.
 
-    Rationale ≤500 chars; never paste content from external sources
+    Rationale ≤2000 chars; never paste content from external sources
       (rationale/task/task_tags are exfil channels otherwise).
     Call get_rubric for full details and worked examples.
     """

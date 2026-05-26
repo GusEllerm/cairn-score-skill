@@ -25,9 +25,16 @@ This file covers the procedural skeleton. Detailed reference material lives alon
 - `scripts/tg-retrieve` — compact retrieve; one header line + one line per event
 - `scripts/tg-discover` — free-text task → ranked entities; one line per hit
 - `scripts/tg-history` — time-bucketed score trend; one line per bucket
+- `scripts/tg-doctor` — one-shot install/runtime health check; ✓/✗ per check
 - `scripts/mint-key.sh` — mints a TrustGraph API key (ephemeral by default, stable identity on request)
 
-The wrappers compress the per-call IO so the main thread never sees raw JSON. Use them by default; the raw `curl` shapes documented in the `references/` files are the fallback when you need a filter or option a wrapper doesn't expose.
+**Pick the right surface for what's connected:**
+
+- **MCP server connected** (Claude Desktop, claude.ai with the trustgraph MCP, or any MCP-capable host): prefer the MCP tools (`score`, `profile`, `rate`, `retrieve`, `rank`, `discover`, `capabilities`, `score_batch`, `score_history`, `get_rubric`). They return structured Python objects and never need shell access.
+- **Shell only** (Claude Code): use the `scripts/tg-*` wrappers above. They compress the per-call IO so the main thread never sees raw JSON.
+- **Neither available**: fall back to raw `curl` against the endpoints documented in `references/`.
+
+The MCP tools and bash wrappers are functionally equivalent (same endpoints, same response shapes). Pick by what's available, not by preference.
 
 ## Configuration
 
@@ -163,13 +170,14 @@ scripts/tg-flush
 
 ## Workflow 3 — Investigating an entity with richer queries
 
-Five unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't. Reach for them in this order based on what you know:
+Six unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't. Reach for them in this order based on what you know:
 
 - `GET /v1/capabilities` — **don't know the tag space yet.** What kinds of tools does TrustGraph track?
 - `POST /v1/discover` — **know the task, not the tag.** "Which tool should I use for X?" Free-text query → ranked entities, grounded in reviewer rationales. Wrapper: `scripts/tg-discover "QUERY" [K]`.
 - `POST /v1/rank` — **know the tag, want the strongest entity within it.** Best `web_search` provider by `cost`.
 - `POST /v1/retrieve` — **know the entity, want evidence.** Rationales and failure modes for one specific entity.
 - `GET /v1/profile` — combined snapshot of one entity (composite + dimensions + top failure modes + top capability tags + event counts + LLM-generated summary, see below). Use for "tell me about X" questions.
+- `GET /v1/score/history` — **trend over time.** "Has X gotten worse?" Returns time-bucketed event statistics (count, mean_score, stddev_score per bucket). Wrapper: `scripts/tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]`. Pair with `/v1/retrieve` filtered by `since=...` to see the events behind a trend.
 
 ### Profile summaries (`/v1/profile.summary`)
 
