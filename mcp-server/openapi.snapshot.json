@@ -1,0 +1,3170 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "TrustGraph",
+        "description": "\nTrustGraph is a trust and reputation API for AI agents. It collects score events\nsubmitted by reviewer agents and maintains a time-decayed Bayesian reputation score\nfor every entity they interact with \u2014 data sources, MCP capability servers, and peer agents.\n\n## Key concepts\n\n**Entities** are the things being scored. Each has a `type` (`agent`, `capability`, or\n`data_source`) and an `external_id` (a URL, URI, or other stable identifier). Entities\nare created automatically on write \u2014 you never need to register them explicitly.\n\n**Score events** are immutable observations submitted by a reviewer agent: \"I interacted\nwith X and rate it Y out of 1.\" They form an append-only audit log from which all\nreputation state is derived.\n\n**Scorers** compute a `composite_score` [0, 1] and a `confidence` [0, 1] from the\naccumulated events. Multiple scorers can run in parallel (shadow execution). The\nproduction default is `beta_decay@h3_k5_v1` \u2014 a time-decayed Beta distribution that\ndown-weights old evidence and shrinks toward a neutral 0.5 prior when evidence is sparse.\n\n**Confidence** is as important as the score itself. `confidence: 0.0` means no\nobservations have been recorded \u2014 it should be read as \"no data\", not \"neutral\".\nAlways check confidence before acting on a composite score.\n\n## Authentication\n\nWrite endpoints (`POST /v1/scores`) require an `X-Api-Key` header. Each key is\nbound to a reviewer entity \u2014 the reviewer identity is implicit and never specified\nin the request body. Read endpoints (`GET /v1/score`, `GET /v1/score/history`,\n`POST /v1/score/batch`) are unauthenticated.\n\nKeys are minted via `POST /v1/keys` \u2014 public, IP rate-limited, returns a plaintext\nkey exactly once. Each `reviewer_external_id` can be claimed only once. Revocation\nis currently a SQL update to `api_keys.revoked_at`; revocations propagate within\nthe in-process cache TTL (60 s by default).\n\n## Error responses\n\nAll errors use a consistent envelope:\n```json\n{\"error\": {\"code\": \"not_found\", \"message\": \"human-readable detail\"}}\n```\n\n## Request correlation\n\nEvery response includes an `X-Request-Id` header. Clients may supply their own\n(alphanumeric + `_-`, up to 64 chars); otherwise the server generates one. Use\nthis value to correlate requests with server-side logs.\n",
+        "version": "0.1.0"
+    },
+    "paths": {
+        "/v1/scores": {
+            "post": {
+                "tags": [
+                    "scores"
+                ],
+                "summary": "Submit a score event",
+                "description": "Submit a trust/quality score from the authenticated reviewer about a target entity.\n\nThe **reviewer** identity is derived from the `X-Api-Key` header and is never\nspecified in the request body. The **reviewee** entity is created automatically if\nit doesn't exist.\n\nAll `external_id` values are normalised on write: scheme and host lowercased,\ntrailing slash stripped, path case preserved.\n\nEvery active scorer is updated atomically in the same transaction as the event\ninsert. The `event_id` is minted server-side and is not exposed in the response.\n\n`observed_at` defaults to now. Set it explicitly when submitting historical\nobservations so the scorer's time-decay is applied at the correct point in time.\n\n**Idempotency:** there is no idempotency key. If a `POST /scores` call times out,\ntreat the rating as already submitted rather than retrying blindly \u2014 duplicate\nsubmissions double-count the evidence.",
+                "operationId": "submit_score_v1_scores_post",
+                "parameters": [
+                    {
+                        "name": "x-api-key",
+                        "in": "header",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "X-Api-Key"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ScoreEventIn"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ScoreEventOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/scores/batch": {
+            "post": {
+                "tags": [
+                    "scores"
+                ],
+                "summary": "Submit a batch of score events",
+                "description": "Submit up to 100 score events from the authenticated reviewer in a single\ntransaction. All events are accepted together or none are \u2014 if any event fails\nvalidation the whole batch is rejected with 422.\n\nEach entry uses the same body shape as `POST /v1/scores`. The reviewer is implicit\n(from `X-Api-Key`) and shared across all events in the batch. Reviewees may be\nheterogeneous \u2014 different entity types and external_ids per event are fine, and\nthe same `(type, external_id)` may appear multiple times (its scorer state is\nupdated in event-order).\n\nRate limit: charges one token from the per-key bucket regardless of batch size,\nso a fully-utilised agent can submit up to ~50 batches/sec = ~5000 events/sec\nunder default settings.\n\n**Idempotency:** same as `POST /v1/scores` \u2014 no client-supplied idempotency key,\nso on timeout treat the batch as accepted and move on rather than retrying.",
+                "operationId": "submit_scores_batch_v1_scores_batch_post",
+                "parameters": [
+                    {
+                        "name": "x-api-key",
+                        "in": "header",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "X-Api-Key"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ScoreBatchSubmitIn"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ScoreBatchSubmitOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/score": {
+            "get": {
+                "tags": [
+                    "scores"
+                ],
+                "summary": "Get current score by entity reference",
+                "description": "Returns the current reputation score for an entity identified by `type` and `external_id`.\n\n**Never creates a row.** Unknown entities return a synthetic `composite_score: 0.5,\nconfidence: 0.0, last_updated: null` \u2014 the uninformed prior. Always check `confidence`\nbefore acting on the score: `0.0` means \"no data\", not \"neutral trust\".\n\nThe `external_id` is normalised before lookup (scheme and host lowercased, trailing\nslash stripped), so you can pass the raw URL without pre-processing.",
+                "operationId": "get_score_by_ref_v1_score_get",
+                "parameters": [
+                    {
+                        "name": "type",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "enum": [
+                                "agent",
+                                "capability",
+                                "data_source"
+                            ],
+                            "type": "string",
+                            "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`.",
+                            "title": "Type"
+                        },
+                        "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`."
+                    },
+                    {
+                        "name": "external_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "External identifier. Normalised before lookup.",
+                            "title": "External Id"
+                        },
+                        "description": "External identifier. Normalised before lookup."
+                    },
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Scoring context. Defaults to `\"general\"`. Must match the context used when submitting events.",
+                            "default": "general",
+                            "title": "Context"
+                        },
+                        "description": "Scoring context. Defaults to `\"general\"`. Must match the context used when submitting events."
+                    },
+                    {
+                        "name": "scorer",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Scorer to use. Omit to use the production default. Use `GET /scorers` to list valid values.",
+                            "title": "Scorer"
+                        },
+                        "description": "Scorer to use. Omit to use the production default. Use `GET /scorers` to list valid values."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ScoreReadingOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/score/history": {
+            "get": {
+                "tags": [
+                    "scores"
+                ],
+                "summary": "Get score event history by entity reference",
+                "description": "Returns time-bucketed event statistics computed on-demand from the raw event log.\n\n`window` is the lookback period; `bucket` is the aggregation granularity. Both\naccept duration strings with `s`, `m`, `h`, `d` suffixes \u2014 e.g. `window=7d&bucket=6h`.\n`bucket` must be \u2264 `window`.\n\n**Never creates a row.** Returns an empty list for unknown entities or entities with\nno events in the specified window and context.",
+                "operationId": "get_history_by_ref_v1_score_history_get",
+                "parameters": [
+                    {
+                        "name": "type",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "enum": [
+                                "agent",
+                                "capability",
+                                "data_source"
+                            ],
+                            "type": "string",
+                            "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`.",
+                            "title": "Type"
+                        },
+                        "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`."
+                    },
+                    {
+                        "name": "external_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "External identifier. Normalised before lookup.",
+                            "title": "External Id"
+                        },
+                        "description": "External identifier. Normalised before lookup."
+                    },
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Scoring context. Defaults to `\"general\"`. Must match the context used when submitting events.",
+                            "default": "general",
+                            "title": "Context"
+                        },
+                        "description": "Scoring context. Defaults to `\"general\"`. Must match the context used when submitting events."
+                    },
+                    {
+                        "name": "window",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Lookback period. E.g. `24h`, `7d`, `30m`.",
+                            "default": "24h",
+                            "title": "Window"
+                        },
+                        "description": "Lookback period. E.g. `24h`, `7d`, `30m`."
+                    },
+                    {
+                        "name": "bucket",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Aggregation bucket size. Must be \u2264 `window`.",
+                            "default": "1h",
+                            "title": "Bucket"
+                        },
+                        "description": "Aggregation bucket size. Must be \u2264 `window`."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/HistoryBucket"
+                                    },
+                                    "title": "Response Get History By Ref V1 Score History Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/score/batch": {
+            "post": {
+                "tags": [
+                    "scores"
+                ],
+                "summary": "Batch score read by entity references",
+                "description": "Returns current reputation scores for up to 100 entities in a single round trip.\n\n**Never creates rows.** Unknown entities return a synthetic reading\n(`composite_score: 0.5, confidence: 0.0, last_updated: null`). Results are returned\nin the same order as the input `refs` array. Duplicate refs within one request are\nresolved to the same score.\n\nThis is the primary endpoint for agents evaluating multiple sources before acting.",
+                "operationId": "batch_scores_v1_score_batch_post",
+                "parameters": [
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Scoring context. Defaults to `\"general\"`. Must match the context used when submitting events.",
+                            "default": "general",
+                            "title": "Context"
+                        },
+                        "description": "Scoring context. Defaults to `\"general\"`. Must match the context used when submitting events."
+                    },
+                    {
+                        "name": "scorer",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Scorer to use. Omit to use the production default. Use `GET /scorers` to list valid values.",
+                            "title": "Scorer"
+                        },
+                        "description": "Scorer to use. Omit to use the production default. Use `GET /scorers` to list valid values."
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ScoreBatchIn"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ScoreBatchItemOut"
+                                    },
+                                    "title": "Response Batch Scores V1 Score Batch Post"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/scorers": {
+            "get": {
+                "tags": [
+                    "scorers"
+                ],
+                "summary": "List active scorers",
+                "description": "Returns all scorers currently receiving score events. Use `scorer_id` values from this response as the `?scorer=` parameter on score read endpoints to request readings from a specific scorer. The scorer with `is_default: true` is used when no `?scorer=` param is supplied.",
+                "operationId": "list_scorers_v1_scorers_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "items": {
+                                        "$ref": "#/components/schemas/ScorerOut"
+                                    },
+                                    "type": "array",
+                                    "title": "Response List Scorers V1 Scorers Get"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/keys": {
+            "post": {
+                "tags": [
+                    "keys"
+                ],
+                "summary": "Mint a new API key",
+                "description": "Mint a fresh API key bound to a `reviewer_external_id`. The plaintext key is\nreturned **exactly once** \u2014 store it; it cannot be retrieved again.\n\nEach `reviewer_external_id` can be claimed only once. The endpoint is public but\nrate-limited per source IP (50 mints per hour). Reserved prefixes (such as\n`agent://trustgraph-` or `agent://anthropic/`) are rejected with 422.\n\n**Workflow:**\n- Agents that need a stable named identity should mint once and persist the key.\n- Ephemeral sessions can mint a fresh `agent://anon/<uuid>` per session.",
+                "operationId": "mint_key_v1_keys_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/KeyMintIn"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/KeyMintOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/retrieve": {
+            "post": {
+                "tags": [
+                    "retrieve"
+                ],
+                "summary": "Retrieve events about an entity, optionally ranked by similarity to a query",
+                "description": "Entity-scoped retrieval over the event log, with optional natural-language\nranking and aggregate context.\n\n**Query semantics**\n\n- If `query` is omitted, events are returned in `observed_at DESC` order.\n- If `query` is present, the string is embedded server-side and events are\n  ranked by cosine similarity to `rationale_embedding`. Hard filters apply\n  first; ANN candidate pool is widened via `hnsw.ef_search` so selective\n  filters don't starve `LIMIT k`.\n\n**Aggregates**\n\n`include_aggregates: true` (default) returns the composite reading + measured\nper-dimension readings + top failure modes alongside the event list. Set\n`false` to skip the joins on `scorer_state` / `dimension_state` and a small\naggregation scan when only the event list is wanted.\n\n**Unknown entities**\n\nAlways 200. `events: []`, and `aggregates.composite_score` is the scorer's\nprior (today `{value: 0.5, confidence: 0.0}`).",
+                "operationId": "retrieve_v1_retrieve_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RetrieveIn"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RetrieveOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/rank": {
+            "post": {
+                "tags": [
+                    "retrieve"
+                ],
+                "summary": "Rank entities by a single dimension within a capability",
+                "description": "Cross-entity ranking. Returns entities that exercise `capability_tag` in\n`context`, ranked by their decayed reading on `rank_by`.\n\n**Candidate set.** An entity is a candidate if all of:\n\n- it has \u2265 `min_events` rows in `entity_capability_affinity` for the\n  `(capability_tag, context)` pair, AND\n- it has a `dimension_state` row for the `rank_by` dimension under the\n  same `(context, scorer_id)` \u2014 i.e. it has actually been rated on that\n  dimension in that context.\n\nCandidates passing both filters are ordered by `n_events DESC` and\ntruncated to `limit_candidates` (default 200, max 1000). Each candidate is\nthen decayed in Python and dropped if it falls below `min_confidence` or\n`min_score`.\n\n**Direction.** All dimensions are `higher_is_better` \u2014 `cost: 0.9` means\n*cheap*. The response echoes `ranked_by` to make this explicit.\n\n**Capping.** `candidates_capped: true` means more than `limit_candidates`\nentities matched and the tail was clipped before decay; bump\n`limit_candidates` or narrow `capability_tag` if that's biting.",
+                "operationId": "rank_entities_v1_rank_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RankIn"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RankOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/profile": {
+            "get": {
+                "tags": [
+                    "retrieve"
+                ],
+                "summary": "Aggregate snapshot for an entity in a context",
+                "description": "Composite + all canonical dimensions + top failure modes + top capability\ntags + event-count metadata for an entity.\n\n**Default context.** Omitting `?context=` runs the dominant-context\nresolver (the same rule the leaderboard and entity HTML page use:\n`n_events >= 3`, then `n_events DESC`, then `context ASC`) and reports\nwhich one was picked on `displayed_context`. Pass `?context=<name>` to\npin a specific slice. The previous behaviour (hardcoded\n`context=\"general\"`) was changed because it hid every non-general\nrating from the JSON read surface even though the HTML surface already\npooled.\n\n**Always 200.** Unknown entities return readings synthesised from the\nscorer's prior, not a 404. Inspect `known` and `n_events_total` to\ndistinguish \"no data\" from \"stale data\".\n\n**Canonical dimensions always surface.** Missing `dimension_state` rows\nare filled from `DimensionalScorer.score_dimension(init_dimension_state(),\nnow)` \u2014 the scorer's prior, not a hard-coded 0.5. The unmeasured rows\ncarry `last_updated: null` to make the synthesis explicit. Custom\n(non-canonical) dimensions appear only when measured.\n\n`n_distinct_reviewers` is additive in this milestone \u2014 older clients\ncan ignore it. `null` for unknown entities; an int otherwise.\n\nThis endpoint absorbs the use case of the now-removed `GET /v1/score/all`:\ncallers that previously compared scorer readings now read the richer\nblock here.",
+                "operationId": "get_profile_v1_profile_get",
+                "parameters": [
+                    {
+                        "name": "type",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "enum": [
+                                "agent",
+                                "capability",
+                                "data_source"
+                            ],
+                            "type": "string",
+                            "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`.",
+                            "title": "Type"
+                        },
+                        "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`."
+                    },
+                    {
+                        "name": "external_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "External identifier. Normalised before lookup.",
+                            "title": "External Id"
+                        },
+                        "description": "External identifier. Normalised before lookup."
+                    },
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Scoring context. Omit (or pass empty) to let the dominant-context resolver pick the displayed context for this entity \u2014 the same `n_events >= 3`, then `n_events DESC`, then `context ASC` rule the leaderboard and entity HTML page use. The resolved value is echoed back as `displayed_context`. Pass an explicit string to force the per-context view.",
+                            "title": "Context"
+                        },
+                        "description": "Scoring context. Omit (or pass empty) to let the dominant-context resolver pick the displayed context for this entity \u2014 the same `n_events >= 3`, then `n_events DESC`, then `context ASC` rule the leaderboard and entity HTML page use. The resolved value is echoed back as `displayed_context`. Pass an explicit string to force the per-context view."
+                    },
+                    {
+                        "name": "top_failure_modes",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 20,
+                            "minimum": 1,
+                            "description": "Cap on top_failure_modes rows.",
+                            "default": 5,
+                            "title": "Top Failure Modes"
+                        },
+                        "description": "Cap on top_failure_modes rows."
+                    },
+                    {
+                        "name": "top_capability_tags",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 20,
+                            "minimum": 1,
+                            "description": "Cap on top_capability_tags rows.",
+                            "default": 5,
+                            "title": "Top Capability Tags"
+                        },
+                        "description": "Cap on top_capability_tags rows."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProfileOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/capabilities": {
+            "get": {
+                "tags": [
+                    "retrieve"
+                ],
+                "summary": "List capability tags with traffic stats",
+                "description": "Returns capability tags observed in a context, with `n_events` (total\ntraffic across entities), `n_entities` (distinct entities), and\n`last_seen` for each. Use this to discover what your population has been\ndoing before drilling into `/v1/rank`.\n\nThe canonical dimensions list lives in `src/trustgraph/dimensions.py` and is\ndocumented in `docs/integration.md`; there is no `/v1/dimensions` endpoint\nbecause returning a five-element constant from a Python module adds nothing.",
+                "operationId": "list_capabilities_v1_capabilities_get",
+                "parameters": [
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Scoring context. Defaults to `\"general\"`.",
+                            "default": "general",
+                            "title": "Context"
+                        },
+                        "description": "Scoring context. Defaults to `\"general\"`."
+                    },
+                    {
+                        "name": "sort",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "events",
+                                "recency"
+                            ],
+                            "type": "string",
+                            "description": "Sort key. `events` = total traffic across entities (default); `recency` = most recently used tag first.",
+                            "default": "events",
+                            "title": "Sort"
+                        },
+                        "description": "Sort key. `events` = total traffic across entities (default); `recency` = most recently used tag first."
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 200,
+                            "minimum": 1,
+                            "description": "Maximum number of tags to return.",
+                            "default": 50,
+                            "title": "Limit"
+                        },
+                        "description": "Maximum number of tags to return."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CapabilityListOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/discover": {
+            "post": {
+                "tags": [
+                    "retrieve"
+                ],
+                "summary": "Discover entities whose rationales match a task description",
+                "description": "Free-text task description \u2192 ranked entities, grounded in actual reviewer\nrationales. Use this when you don't yet know which entity (or which\ncapability tag) fits \u2014 for \"which tool should I use for X\" questions.\n\n**Context pooling.** Results aggregate rationales across *all* contexts\nfor each entity. If you need context-scoped ranking \u2014 e.g. \"best email\ntool *in news context*\" \u2014 use `POST /v1/rank` with the relevant\n`capability_tag` and `context` instead.\n\n**Cold start.** Brand-new entities with zero embedded rationales never\nsurface here. Use `GET /v1/capabilities` to browse the tag space, or\n`POST /v1/rank` if you have a capability_tag in mind.",
+                "operationId": "discover_v1_discover_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DiscoverIn"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DiscoverOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/entities": {
+            "get": {
+                "tags": [
+                    "retrieve"
+                ],
+                "summary": "List entities for the public Reputation Browser",
+                "description": "Public listing endpoint that backs the Reputation Browser leaderboard and\nsearch box.\n\n**No `offset`.** A top-N view with a `?min_confidence=0&limit=200` escape\nhatch replaces offset pagination \u2014 Python-side composite decay re-orders\nthe SQL pre-sort, and offsetting through a re-sorted page produces\nunstable results. If deep pagination is ever needed, cursor pagination\nwith a defined ordering key is the right answer, not offset.\n\n**`min_confidence` only filters when `sort=composite`.** Applying it on\nother sorts would force a full Python decay pass over every candidate\njust to drop sub-threshold rows, which kills the cheap-SQL path. Callers\nthat want a confident-only view should use `sort=composite`.\n\n**`q` is substring search** against `external_id`, case-insensitive,\ntrigram-indexed for `len(q) >= 3`. Shorter queries (1-2 chars) fall\nthrough to a bounded seqscan \u2014 `ai`, `go`, `gh` are legitimate searches\nand not worth a 422. The seqscan is microseconds at current corpus\nsize; revisit if N grows materially.\n\n**`candidate_total`** is the pre-decay candidate count. For\n`sort=composite` the per-page Python pass may drop rows, so the page\ncan be shorter than `limit` and `candidate_total` slightly over-counts\nthe post-filter universe.",
+                "operationId": "list_entities_route_v1_entities_get",
+                "parameters": [
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Optional context filter. When omitted, the listing collapses to one row per entity using the dominant-context resolver (`n_events >= 3` proxy for above-floor, then `n_events DESC`, then `context ASC`); each row's `context` field carries the displayed slice. When supplied, results are filtered to that context \u2014 every row carries `context = <value>` and `EntityListOut.context` echoes it back.",
+                            "title": "Context"
+                        },
+                        "description": "Optional context filter. When omitted, the listing collapses to one row per entity using the dominant-context resolver (`n_events >= 3` proxy for above-floor, then `n_events DESC`, then `context ASC`); each row's `context` field carries the displayed slice. When supplied, results are filtered to that context \u2014 every row carries `context = <value>` and `EntityListOut.context` echoes it back."
+                    },
+                    {
+                        "name": "type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "enum": [
+                                        "agent",
+                                        "capability",
+                                        "data_source"
+                                    ],
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Optional filter on entity type.",
+                            "title": "Type"
+                        },
+                        "description": "Optional filter on entity type."
+                    },
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "maxLength": 200
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Substring match against `external_id` (case-insensitive). Any length accepted; 3+ chars are trigram-indexed, 1-2 chars use a bounded seqscan.",
+                            "title": "Q"
+                        },
+                        "description": "Substring match against `external_id` (case-insensitive). Any length accepted; 3+ chars are trigram-indexed, 1-2 chars use a bounded seqscan."
+                    },
+                    {
+                        "name": "sort",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "composite",
+                                "n_events",
+                                "n_reviewers",
+                                "recent",
+                                "created"
+                            ],
+                            "type": "string",
+                            "default": "composite",
+                            "title": "Sort"
+                        }
+                    },
+                    {
+                        "name": "order",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "asc",
+                                "desc"
+                            ],
+                            "type": "string",
+                            "description": "Sort direction. For non-composite sorts this flips the SQL ORDER BY direction; for composite it flips the Python re-rank direction while keeping the SQL pre-sort at `n_events DESC` (the buffer needs popular candidates regardless of which end of the composite range you want).",
+                            "default": "desc",
+                            "title": "Order"
+                        },
+                        "description": "Sort direction. For non-composite sorts this flips the SQL ORDER BY direction; for composite it flips the Python re-rank direction while keeping the SQL pre-sort at `n_events DESC` (the buffer needs popular candidates regardless of which end of the composite range you want)."
+                    },
+                    {
+                        "name": "min_confidence",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "number",
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "description": "Only applied for `sort=composite`. Ignored otherwise.",
+                            "default": 0.3,
+                            "title": "Min Confidence"
+                        },
+                        "description": "Only applied for `sort=composite`. Ignored otherwise."
+                    },
+                    {
+                        "name": "min_events",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Floor on event count per entity. Applied regardless of sort \u2014 entities with zero traffic in this context never appear.",
+                            "default": 1,
+                            "title": "Min Events"
+                        },
+                        "description": "Floor on event count per entity. Applied regardless of sort \u2014 entities with zero traffic in this context never appear."
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 200,
+                            "minimum": 1,
+                            "description": "Maximum rows to return. 1-200.",
+                            "default": 50,
+                            "title": "Limit"
+                        },
+                        "description": "Maximum rows to return. 1-200."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EntityListOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Landing",
+                "operationId": "landing__get",
+                "parameters": [
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "maxLength": 200
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Q"
+                        }
+                    },
+                    {
+                        "name": "type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "enum": [
+                                        "agent",
+                                        "capability",
+                                        "data_source"
+                                    ],
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Type"
+                        }
+                    },
+                    {
+                        "name": "sort",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "composite",
+                                "n_events",
+                                "n_reviewers",
+                                "recent",
+                                "created"
+                            ],
+                            "type": "string",
+                            "default": "composite",
+                            "title": "Sort"
+                        }
+                    },
+                    {
+                        "name": "order",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "asc",
+                                "desc"
+                            ],
+                            "type": "string",
+                            "default": "desc",
+                            "title": "Order"
+                        }
+                    },
+                    {
+                        "name": "min_confidence",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "number",
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "default": 0.3,
+                            "title": "Min Confidence"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 200,
+                            "minimum": 1,
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "text/html": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/discover": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Discover Page",
+                "description": "RAG-search surface: free-text task description \u2192 ranked entities.\n\nCalls `discover_entities_for_task` directly against the pool, same\nno-HTTP-roundtrip pattern as `landing` calling `list_entities`. The\nembedder is read from `request.app.state.embedder` so the page\ndegrades to a 503 in the same situations as `POST /v1/discover`.\n\nResult renders set `noindex` because the page content is query-\ndependent; the bare `/discover` page (no `q`) stays indexable as a\nlanding surface for the RAG search feature.",
+                "operationId": "discover_page_discover_get",
+                "parameters": [
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "maxLength": 500
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Q"
+                        }
+                    },
+                    {
+                        "name": "k",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 50,
+                            "minimum": 1,
+                            "default": 10,
+                            "title": "K"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "text/html": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/p/{type}/{external_id}": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Entity Page",
+                "operationId": "entity_page_p__type___external_id__get",
+                "parameters": [
+                    {
+                        "name": "type",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "enum": [
+                                "agent",
+                                "capability",
+                                "data_source"
+                            ],
+                            "type": "string",
+                            "title": "Type"
+                        }
+                    },
+                    {
+                        "name": "external_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "External Id"
+                        }
+                    },
+                    {
+                        "name": "context",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Context"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "text/html": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/skill": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Skill Page",
+                "description": "Render the TrustGraph Claude Code skill as a browsable page with a\ndownload link. Indexable; sitemap'd.",
+                "operationId": "skill_page_skill_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "text/html": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/skill/SKILL.md": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Skill Download",
+                "description": "Raw SKILL.md download. Served with a `Content-Disposition: attachment`\nso a browser click downloads rather than navigates. Editors and `curl`\nboth get clean markdown.",
+                "operationId": "skill_download_skill_SKILL_md_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/sitemap.xml": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Sitemap",
+                "description": "List every entity with at least one above-floor context.\n\nOne `<loc>` per entity (no `?context=`), with `<lastmod>` =\nmax(observed_at) across *all* of that entity's contexts \u2014 so a\nfresh `news` event still bumps the sitemap entry even when the\nentity's displayed (dominant) context is `general`.\n\nThe inclusion predicate (`n_events >= 3` for at least one context)\nmatches the entity-page `noindex` floor: the dominant-context\nresolver picks an above-floor context whenever one exists, so\nevery URL in the sitemap renders an indexable view under the\ncommon case. Stale-state mismatches are documented in the M18'\n\"known limitations\" section.\n\nCapped at `LISTING_LIMIT_MAX` entries; when the corpus crosses\n50k, split into a sitemap index.",
+                "operationId": "sitemap_sitemap_xml_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/robots.txt": {
+            "get": {
+                "tags": [
+                    "browser"
+                ],
+                "summary": "Robots",
+                "operationId": "robots_robots_txt_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "text/plain": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/livez": {
+            "get": {
+                "tags": [
+                    "system"
+                ],
+                "summary": "Liveness check",
+                "description": "Always returns 200 while the process is running. Safe to use as a load-balancer\nliveness probe \u2014 does not check downstream dependencies.",
+                "operationId": "livez_livez_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object",
+                                    "title": "Response Livez Livez Get"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/readyz": {
+            "get": {
+                "tags": [
+                    "system"
+                ],
+                "summary": "Readiness check",
+                "description": "Returns 200 when the database connection pool is healthy, 503 otherwise.\nUse as a readiness probe; unhealthy means the instance should not receive traffic.",
+                "operationId": "readyz_readyz_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/version": {
+            "get": {
+                "tags": [
+                    "system"
+                ],
+                "summary": "Build version",
+                "description": "Returns the installed package version. Useful for confirming what's deployed.",
+                "operationId": "version_version_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object",
+                                    "title": "Response Version Version Get"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Aggregates": {
+                "properties": {
+                    "composite_score": {
+                        "$ref": "#/components/schemas/DimensionAggregate",
+                        "description": "Headline scalar reading from the production scorer."
+                    },
+                    "dimensions": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/DimensionAggregate"
+                        },
+                        "type": "object",
+                        "title": "Dimensions",
+                        "description": "Measured per-dimension readings. Unmeasured dimensions are omitted."
+                    },
+                    "top_failure_modes": {
+                        "items": {
+                            "$ref": "#/components/schemas/FailureModeCount"
+                        },
+                        "type": "array",
+                        "title": "Top Failure Modes",
+                        "description": "Most frequent failure_modes across this entity's events."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "composite_score",
+                    "dimensions",
+                    "top_failure_modes"
+                ],
+                "title": "Aggregates"
+            },
+            "CapabilityListOut": {
+                "properties": {
+                    "context": {
+                        "type": "string",
+                        "title": "Context"
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": [
+                            "events",
+                            "recency"
+                        ],
+                        "title": "Sort"
+                    },
+                    "tags": {
+                        "items": {
+                            "$ref": "#/components/schemas/CapabilityTagCount"
+                        },
+                        "type": "array",
+                        "title": "Tags"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "context",
+                    "sort",
+                    "tags"
+                ],
+                "title": "CapabilityListOut"
+            },
+            "CapabilityTagCount": {
+                "properties": {
+                    "tag": {
+                        "type": "string",
+                        "title": "Tag"
+                    },
+                    "n_events": {
+                        "type": "integer",
+                        "title": "N Events",
+                        "description": "Sum of n_events across entities for this tag."
+                    },
+                    "n_entities": {
+                        "type": "integer",
+                        "title": "N Entities",
+                        "description": "Distinct entities with traffic on this tag."
+                    },
+                    "last_seen": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Last Seen",
+                        "description": "Most recent event time across all entities."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "tag",
+                    "n_events",
+                    "n_entities",
+                    "last_seen"
+                ],
+                "title": "CapabilityTagCount",
+                "description": "One capability tag aggregated across all entities in a given context."
+            },
+            "CompositeReading": {
+                "properties": {
+                    "value": {
+                        "type": "number",
+                        "title": "Value"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "title": "Confidence"
+                    },
+                    "last_updated": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Updated"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "value",
+                    "confidence",
+                    "last_updated"
+                ],
+                "title": "CompositeReading",
+                "description": "Scalar composite reading with last-update provenance."
+            },
+            "ContextChip": {
+                "properties": {
+                    "context": {
+                        "type": "string",
+                        "title": "Context"
+                    },
+                    "n_events": {
+                        "type": "integer",
+                        "title": "N Events",
+                        "description": "Events recorded under this context."
+                    },
+                    "composite": {
+                        "type": "number",
+                        "title": "Composite",
+                        "description": "Decayed scalar composite under this context."
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "title": "Confidence",
+                        "description": "Composite confidence in [0, 1]."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "context",
+                    "n_events",
+                    "composite",
+                    "confidence"
+                ],
+                "title": "ContextChip",
+                "description": "One context the entity has events in \u2014 used to render the chip strip\non the public entity page. Always sourced from real per-context state;\nsub-floor contexts are included so the chip strip is a complete\nnavigation surface (clicking a sub-floor chip lands on a noindex page,\nwhich is correct SEO behaviour)."
+            },
+            "DimensionAggregate": {
+                "properties": {
+                    "value": {
+                        "type": "number",
+                        "title": "Value"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "title": "Confidence"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "value",
+                    "confidence"
+                ],
+                "title": "DimensionAggregate",
+                "description": "Per-axis reading \u2014 `value` and `confidence` both in [0, 1]."
+            },
+            "DimensionReading": {
+                "properties": {
+                    "value": {
+                        "type": "number",
+                        "title": "Value"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "title": "Confidence"
+                    },
+                    "last_updated": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Updated",
+                        "description": "Timestamp of the latest event that touched this dimension. `null` means no measurement exists; `value` came from the scorer's prior, not a stale row."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "value",
+                    "confidence",
+                    "last_updated"
+                ],
+                "title": "DimensionReading",
+                "description": "Per-axis reading with last-update provenance.\n\nDistinct from `DimensionAggregate` (used in retrieve/rank) in that\n`last_updated` is null when there is no `dimension_state` row at all \u2014\nthe reading was synthesised from the scorer's prior, not a stale\nmeasurement."
+            },
+            "DimensionScores": {
+                "properties": {
+                    "accuracy": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Accuracy"
+                    },
+                    "latency": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Latency"
+                    },
+                    "cost": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cost"
+                    },
+                    "reliability": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Reliability"
+                    },
+                    "safety": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Safety"
+                    },
+                    "token_efficiency": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Token Efficiency"
+                    },
+                    "context_efficiency": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "maximum": 1.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Context Efficiency"
+                    }
+                },
+                "additionalProperties": true,
+                "type": "object",
+                "title": "DimensionScores",
+                "description": "Per-axis normalised scores in [0, 1]. All `higher_is_better`.\n\nThe canonical dimensions are blessed fields; reviewers may submit\nadditional ad-hoc keys (e.g. `dimensions.helpfulness: 0.8`) \u2014 these are\naccepted and validated as floats in [0, 1] via the model validator below."
+            },
+            "DiscoverHit": {
+                "properties": {
+                    "entity": {
+                        "$ref": "#/components/schemas/EntityByRef"
+                    },
+                    "best_similarity": {
+                        "type": "number",
+                        "title": "Best Similarity",
+                        "description": "Cosine similarity in [0, 1] of the entity's best-matching rationale to the query embedding. This is the primary ranking key."
+                    },
+                    "n_matching": {
+                        "type": "integer",
+                        "title": "N Matching",
+                        "description": "Number of this entity's rationales that fell inside the `inner_pool` ANN candidate cut. Used as the tiebreak when two entities' `best_similarity` are close \u2014 broader rationale coverage wins ties over a single high-similarity match."
+                    },
+                    "best_event": {
+                        "$ref": "#/components/schemas/EventSnippet",
+                        "description": "The matching event itself \u2014 same `EventSnippet` shape returned by `/v1/retrieve` and `/v1/rank` so clients can reuse one rationale-envelope renderer. `similarity` on the snippet carries the same value as `best_similarity` on the hit."
+                    },
+                    "composite_score": {
+                        "$ref": "#/components/schemas/CompositeReading",
+                        "description": "Headline scalar reading from the production scorer, sourced from `context=\"general\"` in v1. Uses `CompositeReading` (not `DimensionAggregate`) to surface `last_updated` for the leaderboard-style chip the web UI renders. **Surprise to watch:** an entity whose rationales live almost entirely under a non-general context can match a discovery query while showing `{value: 0.5, confidence: 0.0, last_updated: null}` here \u2014 that is the scorer's prior, not a real reading."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity",
+                    "best_similarity",
+                    "n_matching",
+                    "best_event",
+                    "composite_score"
+                ],
+                "title": "DiscoverHit",
+                "description": "One ranked entity in a `/v1/discover` response."
+            },
+            "DiscoverIn": {
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "title": "Query",
+                        "description": "Natural-language task description. Embedded server-side via the query-side embedder prefix and compared to `rationale_embedding` across all entities. No structured filter parameters in v1 \u2014 pure semantic match."
+                    },
+                    "k": {
+                        "type": "integer",
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "description": "Maximum number of entities to return.",
+                        "default": 10
+                    },
+                    "inner_pool": {
+                        "type": "integer",
+                        "maximum": 1000.0,
+                        "minimum": 50.0,
+                        "title": "Inner Pool",
+                        "description": "ANN candidate-pool size. Drives both `hnsw.ef_search` *and* the inner `LIMIT` on the cross-entity rationale scan \u2014 they are tied deliberately so the parameter is the single recall knob (widening ef_search alone would still get capped by a smaller inner LIMIT). The `50` default is the lowest value at which hand-curated R@5 plateaus on the M9 sweep (R@5 was flat at 1.000 across {50, 100, 200, 500, 1000} against the eval corpus); higher values buy latency without buying recall. See the *Discovery quality* section of `docs/discovery-query-plan.md` for the full sweep table, measurement commit SHA, and date.",
+                        "default": 50
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "query"
+                ],
+                "title": "DiscoverIn",
+                "description": "Cross-entity semantic discovery body.\n\nFree-text task description \u2192 ranked entities, grounded in actual\nreviewer rationales. Use when you don't yet know which entity (or\ncapability tag) fits the task. See `/v1/rank` for \"best entity\nwithin a known capability_tag\" and `/v1/capabilities` for the tag\nspace itself."
+            },
+            "DiscoverOut": {
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "title": "Query",
+                        "description": "Echo of the input query string."
+                    },
+                    "k": {
+                        "type": "integer",
+                        "title": "K",
+                        "description": "Echo of the requested `k`."
+                    },
+                    "inner_pool": {
+                        "type": "integer",
+                        "title": "Inner Pool",
+                        "description": "Echo of the `inner_pool` recall knob."
+                    },
+                    "n_results": {
+                        "type": "integer",
+                        "title": "N Results",
+                        "description": "Number of entities returned (`<= k`)."
+                    },
+                    "results": {
+                        "items": {
+                            "$ref": "#/components/schemas/DiscoverHit"
+                        },
+                        "type": "array",
+                        "title": "Results"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "query",
+                    "k",
+                    "inner_pool",
+                    "n_results",
+                    "results"
+                ],
+                "title": "DiscoverOut",
+                "description": "Response from POST /v1/discover."
+            },
+            "EntityByRef": {
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "agent",
+                            "capability",
+                            "data_source"
+                        ],
+                        "title": "Type",
+                        "description": "Entity category. One of `\"agent\"`, `\"capability\"`, `\"data_source\"`."
+                    },
+                    "external_id": {
+                        "type": "string",
+                        "title": "External Id",
+                        "description": "The entity's public identifier \u2014 a URL, URI, or any stable string. Normalised on write: scheme and host are lowercased, trailing slashes stripped, path case preserved. E.g. `https://API.FOO.COM/v1/` is stored as `https://api.foo.com/v1`."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "type",
+                    "external_id"
+                ],
+                "title": "EntityByRef",
+                "description": "Identifies an entity by its type and external identifier."
+            },
+            "EntityCapabilityCount": {
+                "properties": {
+                    "tag": {
+                        "type": "string",
+                        "title": "Tag"
+                    },
+                    "n_events": {
+                        "type": "integer",
+                        "title": "N Events",
+                        "description": "Events tagged with this capability for this entity."
+                    },
+                    "last_seen": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Last Seen",
+                        "description": "Most recent event time on this tag."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "tag",
+                    "n_events",
+                    "last_seen"
+                ],
+                "title": "EntityCapabilityCount",
+                "description": "One capability tag's traffic for a single entity in a context."
+            },
+            "EntityListItem": {
+                "properties": {
+                    "entity": {
+                        "$ref": "#/components/schemas/EntityByRef"
+                    },
+                    "context": {
+                        "type": "string",
+                        "title": "Context",
+                        "description": "The displayed context for this row. When the caller did not pass `?context=`, the listing collapses to one row per entity and this field carries the dominant context per the resolver: highest-`n_events` context with `n_events >= 3` (the SQL proxy for above-floor confidence), with `context ASC` tiebreak. When the caller passed `?context=X`, this echoes `X` on every row. **Not** the only context this entity is rated in \u2014 see `/v1/profile` and the entity-page chip strip for the per-context breakdown."
+                    },
+                    "composite_score": {
+                        "$ref": "#/components/schemas/CompositeReading",
+                        "description": "Decayed scalar reading from the production scorer. `last_updated` is null when no events exist (scorer prior)."
+                    },
+                    "n_events": {
+                        "type": "integer",
+                        "title": "N Events",
+                        "description": "Total score_events for this entity in this context."
+                    },
+                    "n_distinct_reviewers": {
+                        "type": "integer",
+                        "title": "N Distinct Reviewers",
+                        "description": "Distinct reviewer entities that have scored this row."
+                    },
+                    "first_observed_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "First Observed At"
+                    },
+                    "last_observed_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Observed At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity",
+                    "context",
+                    "composite_score",
+                    "n_events",
+                    "n_distinct_reviewers",
+                    "first_observed_at",
+                    "last_observed_at"
+                ],
+                "title": "EntityListItem",
+                "description": "One row in the GET /v1/entities listing."
+            },
+            "EntityListOut": {
+                "properties": {
+                    "results": {
+                        "items": {
+                            "$ref": "#/components/schemas/EntityListItem"
+                        },
+                        "type": "array",
+                        "title": "Results"
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": [
+                            "composite",
+                            "n_events",
+                            "n_reviewers",
+                            "recent",
+                            "created"
+                        ],
+                        "title": "Sort"
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": [
+                            "asc",
+                            "desc"
+                        ],
+                        "title": "Order"
+                    },
+                    "context": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Context",
+                        "description": "The filter context the caller passed via `?context=`, echoed back. `null` when no `?context=` was supplied \u2014 the default path returns the collapsed-dominant view (one row per entity), with each row's displayed context surfaced as `EntityListItem.context`."
+                    },
+                    "candidate_total": {
+                        "type": "integer",
+                        "title": "Candidate Total",
+                        "description": "Pre-decay candidate count \u2014 entities matching `type`, `q`, `context`, and `min_events`. For `sort=composite` the per-page Python decay pass may drop some of these below `min_confidence`, so the page can be shorter than `limit` and `candidate_total` slightly over-counts the post-filter universe. Honest trade-off: a post-decay total would force walking the entire candidate space on every request."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "title": "Limit"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "results",
+                    "sort",
+                    "order",
+                    "context",
+                    "candidate_total",
+                    "limit"
+                ],
+                "title": "EntityListOut",
+                "description": "Response from GET /v1/entities."
+            },
+            "EventSnippet": {
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Event Id"
+                    },
+                    "observed_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Observed At"
+                    },
+                    "context": {
+                        "type": "string",
+                        "title": "Context",
+                        "description": "Scoring context this event was submitted under. Surfaced so callers can show a per-event context chip on a pooled events list (where the list mixes events from multiple contexts)."
+                    },
+                    "reviewer_external_id": {
+                        "type": "string",
+                        "title": "Reviewer External Id"
+                    },
+                    "reviewer_type": {
+                        "type": "string",
+                        "enum": [
+                            "agent",
+                            "capability",
+                            "data_source"
+                        ],
+                        "title": "Reviewer Type",
+                        "description": "Type of the reviewer entity, read directly from `entities.type`. **v1 caveat:** the score-write path (`POST /v1/scores` and `POST /v1/scores/batch`) currently hard-codes the reviewer type as `\"agent\"` when upserting the reviewer row, so every value returned here is `\"agent\"` until that write path is generalised. The field is correctly reading the DB \u2014 the DB just doesn't yet hold the distinction. Browser surfaces that link reviewers should already key off this value so they need no further change when the write-path lift happens."
+                    },
+                    "score": {
+                        "type": "number",
+                        "title": "Score"
+                    },
+                    "task": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Task"
+                    },
+                    "task_tags": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Task Tags"
+                    },
+                    "dimensions": {
+                        "additionalProperties": {
+                            "type": "number"
+                        },
+                        "type": "object",
+                        "title": "Dimensions"
+                    },
+                    "failure_modes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Failure Modes"
+                    },
+                    "metrics": {
+                        "additionalProperties": {
+                            "type": "number"
+                        },
+                        "type": "object",
+                        "title": "Metrics"
+                    },
+                    "rationale": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Rationale"
+                    },
+                    "similarity": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Similarity",
+                        "description": "Cosine similarity in [0, 1] when query was provided; null otherwise."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "event_id",
+                    "observed_at",
+                    "context",
+                    "reviewer_external_id",
+                    "reviewer_type",
+                    "score",
+                    "task",
+                    "task_tags",
+                    "dimensions",
+                    "failure_modes",
+                    "metrics",
+                    "rationale",
+                    "similarity"
+                ],
+                "title": "EventSnippet"
+            },
+            "FailureModeCount": {
+                "properties": {
+                    "tag": {
+                        "type": "string",
+                        "title": "Tag"
+                    },
+                    "count": {
+                        "type": "integer",
+                        "title": "Count"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "tag",
+                    "count"
+                ],
+                "title": "FailureModeCount"
+            },
+            "HTTPValidationError": {
+                "properties": {
+                    "detail": {
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        },
+                        "type": "array",
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+            },
+            "HighlightOut": {
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "title": "Text",
+                        "description": "The bullet text \u2014 one sentence."
+                    },
+                    "event_ids": {
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "type": "array",
+                        "title": "Event Ids",
+                        "description": "Score events that ground this bullet. All ids are guaranteed to resolve via `POST /v1/retrieve` for this entity (the worker filters out any id the model invented)."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "text",
+                    "event_ids"
+                ],
+                "title": "HighlightOut",
+                "description": "One bullet in an entity's LLM-generated summary."
+            },
+            "HistoryBucket": {
+                "properties": {
+                    "bucket_start": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Bucket Start",
+                        "description": "Start of the bucket (UTC)."
+                    },
+                    "count": {
+                        "type": "integer",
+                        "title": "Count",
+                        "description": "Number of score events in this bucket."
+                    },
+                    "mean_score": {
+                        "type": "number",
+                        "title": "Mean Score",
+                        "description": "Mean score across events in this bucket."
+                    },
+                    "stddev_score": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Stddev Score",
+                        "description": "Standard deviation of scores. `null` when `count` is 1."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "bucket_start",
+                    "count",
+                    "mean_score",
+                    "stddev_score"
+                ],
+                "title": "HistoryBucket",
+                "description": "Aggregated score statistics for one time bucket."
+            },
+            "KeyMintIn": {
+                "properties": {
+                    "reviewer_external_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 8,
+                        "title": "Reviewer External Id",
+                        "description": "Identity to bind this key to. Must be URI-shaped (e.g. `agent://...`, `mcp://...`, `https://...`). Reserved prefixes are rejected. Each `reviewer_external_id` can be claimed only once."
+                    },
+                    "label": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 128
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Label",
+                        "description": "Optional human-readable label for the key. Not exposed via the API."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "reviewer_external_id"
+                ],
+                "title": "KeyMintIn",
+                "description": "Request body for POST /v1/keys."
+            },
+            "KeyMintOut": {
+                "properties": {
+                    "api_key": {
+                        "type": "string",
+                        "title": "Api Key",
+                        "description": "The plaintext API key. Pass as `X-Api-Key` on write endpoints. Store it \u2014 it is not retrievable again."
+                    },
+                    "reviewer_external_id": {
+                        "type": "string",
+                        "title": "Reviewer External Id",
+                        "description": "The reviewer identity bound to this key (normalised)."
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At",
+                        "description": "When the key was created."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "api_key",
+                    "reviewer_external_id",
+                    "created_at"
+                ],
+                "title": "KeyMintOut",
+                "description": "Response from POST /v1/keys. The plaintext `api_key` is returned exactly once."
+            },
+            "ProfileOut": {
+                "properties": {
+                    "entity": {
+                        "$ref": "#/components/schemas/EntityByRef"
+                    },
+                    "known": {
+                        "type": "boolean",
+                        "title": "Known",
+                        "description": "True when the entity has at least one row in the entities table. False otherwise \u2014 readings still come back, populated from priors."
+                    },
+                    "composite_score": {
+                        "$ref": "#/components/schemas/CompositeReading"
+                    },
+                    "dimensions": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/DimensionReading"
+                        },
+                        "type": "object",
+                        "title": "Dimensions",
+                        "description": "All canonical dimensions are always present (synthesised from the scorer's prior when unmeasured). Custom dimensions appear only when measured."
+                    },
+                    "top_failure_modes": {
+                        "items": {
+                            "$ref": "#/components/schemas/FailureModeCount"
+                        },
+                        "type": "array",
+                        "title": "Top Failure Modes"
+                    },
+                    "top_capability_tags": {
+                        "items": {
+                            "$ref": "#/components/schemas/EntityCapabilityCount"
+                        },
+                        "type": "array",
+                        "title": "Top Capability Tags",
+                        "description": "Top capability tags by traffic for this entity in this context."
+                    },
+                    "n_events_total": {
+                        "type": "integer",
+                        "title": "N Events Total",
+                        "description": "Total score_events for this entity in this context."
+                    },
+                    "n_distinct_reviewers": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "N Distinct Reviewers",
+                        "description": "Number of distinct reviewers that have scored this entity in this context. `null` for unknown entities. Older clients can ignore this field \u2014 it is additive."
+                    },
+                    "first_observed_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "First Observed At"
+                    },
+                    "last_observed_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Observed At"
+                    },
+                    "displayed_context": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Displayed Context",
+                        "description": "The context the per-context fields (composite, dimensions, failure modes, tags, stats) on this response were sourced from. Surfaced so HTML callers can render a *scored in: {ctx}* label without re-deriving it. `null` on unknown entities; otherwise the value the caller asked for (or the dominant context the resolver chose when no `?context=` was supplied)."
+                    },
+                    "pooled_events": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/EventSnippet"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pooled Events",
+                        "description": "Recent events for this entity pooled across **all** contexts, ordered `observed_at DESC`. Populated only when the caller requests events alongside the profile (the HTML entity-page render path); `null` on the `/v1/profile` API surface where events are served separately by `/v1/retrieve`."
+                    },
+                    "context_chips": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/ContextChip"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Context Chips",
+                        "description": "Per-context summary used to render the entity-page chip strip. One entry per context the entity has events in, including sub-floor contexts. Populated only when the caller requests it; `null` on the `/v1/profile` API surface."
+                    },
+                    "summary": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/SummaryOut"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "LLM-generated narrative summary of reviewer rationales. `null` when the entity has fewer than 3 events, when no summary has been generated yet, or when the worker is disabled. Refreshed asynchronously by the summary worker. Citations in `highlights[].event_ids` reference events available via `/v1/retrieve` for this entity."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity",
+                    "known",
+                    "composite_score",
+                    "dimensions",
+                    "top_failure_modes",
+                    "top_capability_tags",
+                    "n_events_total",
+                    "first_observed_at",
+                    "last_observed_at"
+                ],
+                "title": "ProfileOut"
+            },
+            "RankIn": {
+                "properties": {
+                    "capability_tag": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "title": "Capability Tag",
+                        "description": "Capability tag entities must have traffic on, e.g. `web_search`."
+                    },
+                    "context": {
+                        "type": "string",
+                        "title": "Context",
+                        "description": "Scoring context. Applied to both the affinity filter and the dimension_state lookup \u2014 entities only appear if they exercised the capability *and* were rated on `rank_by` in this context.",
+                        "default": "general"
+                    },
+                    "rank_by": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "title": "Rank By",
+                        "description": "Dimension to rank on. Higher value = better (cost: 0.9 = cheap)."
+                    },
+                    "min_events": {
+                        "type": "integer",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "Min Events",
+                        "description": "Floor on capability_tag traffic per entity before ranking.",
+                        "default": 3
+                    },
+                    "min_confidence": {
+                        "type": "number",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Min Confidence",
+                        "description": "Drop entities whose rank-dimension confidence is below this.",
+                        "default": 0.3
+                    },
+                    "min_score": {
+                        "type": "number",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Min Score",
+                        "description": "Optional floor on the rank-dimension value.",
+                        "default": 0.0
+                    },
+                    "k": {
+                        "type": "integer",
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "description": "Maximum number of results to return.",
+                        "default": 10
+                    },
+                    "limit_candidates": {
+                        "type": "integer",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Limit Candidates",
+                        "description": "Bounds Python decay calls per request. Candidates passing the affinity + dimension_state existence filters are ordered by n_events DESC and truncated to this value before per-entity decay is computed.",
+                        "default": 200
+                    },
+                    "include_supporting_event": {
+                        "type": "boolean",
+                        "title": "Include Supporting Event",
+                        "description": "Include one representative recent event per ranked entity.",
+                        "default": true
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "capability_tag",
+                    "rank_by"
+                ],
+                "title": "RankIn",
+                "description": "Cross-entity ranking body. Returns entities ranked by their decayed\nscore on `rank_by`, restricted to entities with traffic on `capability_tag`\n(and an existing dimension_state row for `rank_by` in the same context)."
+            },
+            "RankOut": {
+                "properties": {
+                    "capability_tag": {
+                        "type": "string",
+                        "title": "Capability Tag"
+                    },
+                    "ranked_by": {
+                        "type": "string",
+                        "title": "Ranked By",
+                        "description": "Echo of the `rank_by` dimension. All dimensions are higher_is_better, so a higher value on `cost` means the entity is cheaper."
+                    },
+                    "candidates_considered": {
+                        "type": "integer",
+                        "title": "Candidates Considered",
+                        "description": "Number of entities that survived the candidate-set filters before decay."
+                    },
+                    "candidates_capped": {
+                        "type": "boolean",
+                        "title": "Candidates Capped",
+                        "description": "True when more than `limit_candidates` entities matched and the set was truncated by n_events DESC before per-entity decay."
+                    },
+                    "results": {
+                        "items": {
+                            "$ref": "#/components/schemas/RankResult"
+                        },
+                        "type": "array",
+                        "title": "Results"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "capability_tag",
+                    "ranked_by",
+                    "candidates_considered",
+                    "candidates_capped",
+                    "results"
+                ],
+                "title": "RankOut"
+            },
+            "RankResult": {
+                "properties": {
+                    "entity": {
+                        "$ref": "#/components/schemas/EntityByRef"
+                    },
+                    "rank_dimension": {
+                        "$ref": "#/components/schemas/DimensionAggregate",
+                        "description": "Decayed reading for the dimension named in `rank_by`."
+                    },
+                    "composite_score": {
+                        "$ref": "#/components/schemas/DimensionAggregate",
+                        "description": "Headline scalar reading from the production scorer."
+                    },
+                    "n_events": {
+                        "type": "integer",
+                        "title": "N Events",
+                        "description": "Capability traffic count from entity_capability_affinity."
+                    },
+                    "supporting_event": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/EventSnippet"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Most recent event from this entity that scored `rank_by` and carries a rationale, if available. Null when `include_supporting_event` is false or no such event exists."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity",
+                    "rank_dimension",
+                    "composite_score",
+                    "n_events",
+                    "supporting_event"
+                ],
+                "title": "RankResult",
+                "description": "One ranked entity."
+            },
+            "RetrieveFilters": {
+                "properties": {
+                    "task_tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Task Tags",
+                        "description": "Match events whose task_tags overlap any of these."
+                    },
+                    "failure_modes_any": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Failure Modes Any",
+                        "description": "Match events whose failure_modes overlap any of these (OR within the list)."
+                    },
+                    "dimensions_present": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Dimensions Present",
+                        "description": "Match events that explicitly scored every named dimension."
+                    },
+                    "since": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Since",
+                        "description": "Match events with observed_at >= this timestamp."
+                    }
+                },
+                "type": "object",
+                "title": "RetrieveFilters",
+                "description": "Optional hard filters applied before similarity ranking."
+            },
+            "RetrieveIn": {
+                "properties": {
+                    "entity": {
+                        "$ref": "#/components/schemas/EntityByRef",
+                        "description": "Entity to retrieve events for."
+                    },
+                    "context": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Context",
+                        "description": "Scoring context. `null` (the default) **pools events across all contexts** \u2014 the entity's full event log, ordered by recency or similarity, regardless of which context each event was submitted under. Aggregates in this branch are sourced from the dominant context (the SQL-proxy `n_events >= 3`, then `n_events DESC`, then `context ASC` resolver shared with `/v1/profile` and the entity HTML page), and the resolved value is echoed back as `displayed_context`. Pass an explicit string to restrict both events and aggregates to that context."
+                    },
+                    "query": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 2000
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Query",
+                        "description": "Optional natural-language query. When present, events are ranked by cosine similarity of the query embedding against rationale_embedding. When absent, events are returned in `observed_at DESC` order."
+                    },
+                    "filters": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/RetrieveFilters"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Hard filters applied before similarity ranking."
+                    },
+                    "k": {
+                        "type": "integer",
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "description": "Maximum events to return. 1\u201350.",
+                        "default": 10
+                    },
+                    "include_aggregates": {
+                        "type": "boolean",
+                        "title": "Include Aggregates",
+                        "description": "Include composite + per-dimension snapshot and top failure modes alongside the event list. Defaults to true.",
+                        "default": true
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity"
+                ],
+                "title": "RetrieveIn",
+                "description": "Filter + top-k retrieval body."
+            },
+            "RetrieveOut": {
+                "properties": {
+                    "entity": {
+                        "$ref": "#/components/schemas/EntityByRef"
+                    },
+                    "aggregates": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/Aggregates"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Null when `include_aggregates: false`."
+                    },
+                    "events": {
+                        "items": {
+                            "$ref": "#/components/schemas/EventSnippet"
+                        },
+                        "type": "array",
+                        "title": "Events"
+                    },
+                    "displayed_context": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Displayed Context",
+                        "description": "The context the `aggregates` block was sourced from. Echoes the caller's `context` when one was supplied; on the pooled-events default (`context: null`) carries the dominant context the resolver picked. `null` only when `include_aggregates: false` **and** `context: null` \u2014 there's nothing context-shaped to report. Events themselves carry their own per-event `context`."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity",
+                    "aggregates",
+                    "events"
+                ],
+                "title": "RetrieveOut"
+            },
+            "ScoreBatchIn": {
+                "properties": {
+                    "refs": {
+                        "items": {
+                            "$ref": "#/components/schemas/EntityByRef"
+                        },
+                        "type": "array",
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Refs",
+                        "description": "1\u2013100 entity references to look up. Duplicates are handled safely."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "refs"
+                ],
+                "title": "ScoreBatchIn",
+                "description": "Batch score read request."
+            },
+            "ScoreBatchItemOut": {
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "title": "Type",
+                        "description": "One of `\"agent\"`, `\"capability\"`, `\"data_source\"`."
+                    },
+                    "external_id": {
+                        "type": "string",
+                        "title": "External Id",
+                        "description": "Normalised external identifier."
+                    },
+                    "composite_score": {
+                        "type": "number",
+                        "title": "Composite Score",
+                        "description": "Reputation score in [0, 1]. Check `confidence` before acting on this."
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "title": "Confidence",
+                        "description": "Weight of evidence in [0, 1]. 0.0 means no observations recorded."
+                    },
+                    "diagnostics": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Diagnostics",
+                        "description": "Scorer-specific internal state."
+                    },
+                    "last_updated": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Updated",
+                        "description": "Timestamp of the most recent score event. `null` if no evidence exists."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "type",
+                    "external_id",
+                    "composite_score",
+                    "confidence",
+                    "diagnostics",
+                    "last_updated"
+                ],
+                "title": "ScoreBatchItemOut",
+                "description": "Score reading for one entity in a batch response."
+            },
+            "ScoreBatchSubmitIn": {
+                "properties": {
+                    "events": {
+                        "items": {
+                            "$ref": "#/components/schemas/ScoreEventIn"
+                        },
+                        "type": "array",
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Events",
+                        "description": "1\u2013100 score events to submit under the authenticated reviewer. Each entry uses the same shape as a single `POST /v1/scores` body. The batch is applied in one transaction \u2014 if any event fails validation the whole batch is rejected with 422."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "events"
+                ],
+                "title": "ScoreBatchSubmitIn",
+                "description": "Batch score submission request \u2014 atomic; all events accepted or none."
+            },
+            "ScoreBatchSubmitOut": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "title": "Status",
+                        "description": "Always `\"accepted\"`."
+                    },
+                    "count": {
+                        "type": "integer",
+                        "title": "Count",
+                        "description": "Number of events accepted (== `len(input.events)`)."
+                    },
+                    "reviewees": {
+                        "items": {
+                            "$ref": "#/components/schemas/EntityByRef"
+                        },
+                        "type": "array",
+                        "title": "Reviewees",
+                        "description": "The entities that were scored, in the same order as the input events, with normalised external_ids. Duplicates in the input remain as duplicates here."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "count",
+                    "reviewees"
+                ],
+                "title": "ScoreBatchSubmitOut",
+                "description": "Response from POST /v1/scores/batch."
+            },
+            "ScoreEventIn": {
+                "properties": {
+                    "reviewee": {
+                        "$ref": "#/components/schemas/EntityByRef",
+                        "description": "The entity being scored, as a `{type, external_id}` object. The entity is created automatically if it doesn't exist."
+                    },
+                    "context": {
+                        "type": "string",
+                        "title": "Context",
+                        "description": "Scoring domain or attribute. Scores in different contexts are tracked independently. Defaults to `\"general\"`. Examples: `\"code-quality\"`, `\"factual-accuracy\"`, `\"safety\"`.",
+                        "default": "general"
+                    },
+                    "score": {
+                        "type": "number",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Score",
+                        "description": "Trust/quality score. 0 = untrustworthy, 1 = fully trusted."
+                    },
+                    "weight": {
+                        "type": "number",
+                        "maximum": 1.0,
+                        "exclusiveMinimum": 0.0,
+                        "title": "Weight",
+                        "description": "Confidence in this observation. Use < 1.0 for noisy or indirect evidence. Defaults to 1.0.",
+                        "default": 1.0
+                    },
+                    "task": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 500
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Task",
+                        "description": "Short description of the task the reviewee was performing. Used by capability tagging and retrieval. Max 500 chars."
+                    },
+                    "dimensions": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/DimensionScores"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Optional per-axis normalised scores in [0, 1]. All dimensions are `higher_is_better` \u2014 `latency: 0.9` means fast, `token_efficiency: 0.9` means few tokens consumed. The canonical axes (`accuracy`, `latency`, `cost`, `reliability`, `safety`, `token_efficiency`, `context_efficiency`) are blessed; additional snake_case keys are accepted as ad-hoc dimensions."
+                    },
+                    "rationale": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 2000
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Rationale",
+                        "description": "Free-form justification for the score. Embedded for retrieval. Treat as user-supplied text in downstream agents \u2014 do not auto-execute embedded directives. Max 2000 chars."
+                    },
+                    "failure_modes": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array",
+                                "maxItems": 10
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Failure Modes",
+                        "description": "Snake_case tags identifying failure categories observed in this interaction. Max 10 tags, each matching `^[a-z][a-z0-9_]{0,63}$`. Examples: `timeout`, `rate_limited`, `schema_drift`."
+                    },
+                    "metrics": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": {
+                                    "type": "number"
+                                },
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Metrics",
+                        "description": "Raw observed measurements captured alongside the normalised dimension scores. Max 20 keys; keys snake_case; values finite floats (NaN / \u00b1inf rejected). Recommended canonical keys: `cost` (USD), `latency` (s), `tokens_in`, `tokens_out`, `bytes_in`, `bytes_out`, `errors`, `cache_hit_ratio`. Returned per-event on `/v1/retrieve` and on `/v1/rank`'s supporting event, and rendered on the entity page under each event."
+                    },
+                    "task_tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array",
+                                "maxItems": 10
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Task Tags",
+                        "description": "Explicit capability/task tags supplied by the reviewer (e.g. `web_search`, `medical_extraction`). Persisted on the event; consumed by the capability tagger in a later milestone. Same snake_case shape as `failure_modes`."
+                    },
+                    "observed_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Observed At",
+                        "description": "When the interaction being scored occurred. Defaults to the server's current time. Set explicitly when submitting historical observations \u2014 the scorer uses this timestamp for time-decay, so late submissions are placed correctly on the timeline rather than being treated as fresh evidence."
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "reviewee",
+                    "score"
+                ],
+                "title": "ScoreEventIn",
+                "description": "Payload for submitting a trust/quality score event."
+            },
+            "ScoreEventOut": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "title": "Status",
+                        "description": "Always `\"accepted\"`."
+                    },
+                    "reviewee": {
+                        "$ref": "#/components/schemas/EntityByRef",
+                        "description": "The entity that was scored, with normalised external_id."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "reviewee"
+                ],
+                "title": "ScoreEventOut",
+                "description": "Response from POST /scores."
+            },
+            "ScoreReadingOut": {
+                "properties": {
+                    "composite_score": {
+                        "type": "number",
+                        "title": "Composite Score",
+                        "description": "Reputation score in [0, 1]. Comparable across scorers and contexts. For entities with no evidence this is 0.5 (the uninformed prior) \u2014 **always check `confidence` before acting on this value.**"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "title": "Confidence",
+                        "description": "Weight of evidence in [0, 1]. 0.0 means no observations have been recorded \u2014 treat this as 'no data', not 'neutral'. A practical decision threshold is 0.3\u20130.5 depending on risk tolerance; below that, fall back to your own policy."
+                    },
+                    "diagnostics": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Diagnostics",
+                        "description": "Scorer-specific internal state. For `beta_decay` scorers: `alpha` (positive evidence), `beta` (negative evidence), `n_eff` (effective observation count after decay), `mu` (raw Beta mean)."
+                    },
+                    "last_updated": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Last Updated",
+                        "description": "Timestamp of the most recent score event recorded for this entity in this context. `null` if no evidence exists yet."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "composite_score",
+                    "confidence",
+                    "diagnostics",
+                    "last_updated"
+                ],
+                "title": "ScoreReadingOut",
+                "description": "Current reputation score for an entity from a single scorer."
+            },
+            "ScorerOut": {
+                "properties": {
+                    "scorer_id": {
+                        "type": "string",
+                        "title": "Scorer Id",
+                        "description": "Stable identifier for this scorer, e.g. `beta_decay@h3_k5_v1`. Pass this to `?scorer=` query params to request readings from a specific scorer."
+                    },
+                    "state_schema_version": {
+                        "type": "integer",
+                        "title": "State Schema Version",
+                        "description": "Version of the state schema. Incremented when the state shape changes."
+                    },
+                    "is_default": {
+                        "type": "boolean",
+                        "title": "Is Default",
+                        "description": "Whether this is the production default scorer. Score endpoints return this scorer's reading when no `?scorer=` param is provided."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "scorer_id",
+                    "state_schema_version",
+                    "is_default"
+                ],
+                "title": "ScorerOut",
+                "description": "A registered scorer."
+            },
+            "SummaryOut": {
+                "properties": {
+                    "synthesis": {
+                        "type": "string",
+                        "title": "Synthesis",
+                        "description": "1-paragraph plain-prose synthesis. Rendered as plain text on the HTML surface \u2014 never interpreted as markdown."
+                    },
+                    "highlights": {
+                        "items": {
+                            "$ref": "#/components/schemas/HighlightOut"
+                        },
+                        "type": "array",
+                        "title": "Highlights",
+                        "description": "3-5 specific observations with citations."
+                    },
+                    "n_events_at_generation": {
+                        "type": "integer",
+                        "title": "N Events At Generation",
+                        "description": "`score_events` count at the moment this summary was generated."
+                    },
+                    "n_reviewers_at_generation": {
+                        "type": "integer",
+                        "title": "N Reviewers At Generation",
+                        "description": "Distinct-reviewer count at the moment this summary was generated."
+                    },
+                    "model": {
+                        "type": "string",
+                        "title": "Model",
+                        "description": "Backend model identifier, e.g. `\"claude-sonnet-4-6\"`."
+                    },
+                    "prompt_version": {
+                        "type": "integer",
+                        "title": "Prompt Version",
+                        "description": "Version of the prompt template used. Bumps when the prompt changes."
+                    },
+                    "generated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Generated At",
+                        "description": "When this summary was committed."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "synthesis",
+                    "highlights",
+                    "n_events_at_generation",
+                    "n_reviewers_at_generation",
+                    "model",
+                    "prompt_version",
+                    "generated_at"
+                ],
+                "title": "SummaryOut",
+                "description": "LLM-generated narrative summary attached to an entity profile."
+            },
+            "ValidationError": {
+                "properties": {
+                    "loc": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "integer"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Location"
+                    },
+                    "msg": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "type": {
+                        "type": "string",
+                        "title": "Error Type"
+                    },
+                    "input": {
+                        "title": "Input"
+                    },
+                    "ctx": {
+                        "type": "object",
+                        "title": "Context"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "loc",
+                    "msg",
+                    "type"
+                ],
+                "title": "ValidationError"
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "scores",
+            "description": "Submit score events (authenticated) and read reputation scores by `(type, external_id)` reference. Read endpoints never create entity rows."
+        },
+        {
+            "name": "scorers",
+            "description": "Inspect the active scorer registry."
+        },
+        {
+            "name": "keys",
+            "description": "Mint API keys bound to a reviewer identity. Public, IP rate-limited. Plaintext keys are returned exactly once."
+        },
+        {
+            "name": "retrieve",
+            "description": "Entity-scoped event retrieval. Vector ranking when `query` is supplied, recency order otherwise. Returns events alongside optional aggregate context."
+        },
+        {
+            "name": "system",
+            "description": "Liveness, readiness, and version endpoints."
+        }
+    ]
+}
