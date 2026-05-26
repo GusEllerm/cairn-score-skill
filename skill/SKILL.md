@@ -19,9 +19,12 @@ This file covers the procedural skeleton. Detailed reference material lives alon
 - `references/queries.md` — Workflow 3 endpoints (`/profile`, `/retrieve`, `/rank`, `/capabilities`) and the routing table
 - `references/scoring-model.md` — decay and confidence accrual
 - `scripts/tg-score` — pre-check; prints one line `<composite> <confidence> <last_updated>`
+- `scripts/tg-score-batch` — batch pre-check; refs JSONL on stdin, one line per ref
 - `scripts/tg-rate` — appends a `/v1/scores` body (read from stdin) to a local queue; silent on success
 - `scripts/tg-flush` — submits the queued events as one batch via `/v1/scores/batch`; run at session end
 - `scripts/tg-retrieve` — compact retrieve; one header line + one line per event
+- `scripts/tg-discover` — free-text task → ranked entities; one line per hit
+- `scripts/tg-history` — time-bucketed score trend; one line per bucket
 - `scripts/mint-key.sh` — mints a TrustGraph API key (ephemeral by default, stable identity on request)
 
 The wrappers compress the per-call IO so the main thread never sees raw JSON. Use them by default; the raw `curl` shapes documented in the `references/` files are the fallback when you need a filter or option a wrapper doesn't expose.
@@ -88,17 +91,16 @@ Skip the lookup for obviously trivial cases: well-known docs sites the user has 
 
 ### Batch lookups
 
-When you're evaluating multiple sources before acting, use the batch read endpoint:
+When you're evaluating multiple sources before acting, use the batch wrapper:
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/score/batch" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "refs": [
-      {"type": "data_source", "external_id": "https://example.com/page1"},
-      {"type": "capability",  "external_id": "mcp://weather-api"}
-    ]
-  }'
+printf '%s\n' \
+  '{"type":"data_source","external_id":"https://example.com/page1"}' \
+  '{"type":"capability","external_id":"mcp://weather-api"}' \
+  | scripts/tg-score-batch
+# → # n_refs=2 returned=2
+#   0.78 0.83 data_source https://example.com/page1
+#   0.62 0.41 capability  mcp://weather-api
 ```
 
 Up to 100 refs per call. Note: this is `/v1/score/batch` (singular) — the plural `/v1/scores/batch` is for batch *writes*.
@@ -108,10 +110,14 @@ Up to 100 refs per call. Note: this is `/v1/score/batch` (singular) — the plur
 If a previously trusted source starts misbehaving — or the user asks whether something has gotten worse — fetch its history:
 
 ```bash
-curl -s "$TRUSTGRAPH_BASE_URL/v1/score/history?type=data_source&external_id=https://example.com&window=30d&bucket=1d"
+scripts/tg-history data_source https://example.com 30d 1d
+# → # entity=data_source/https://example.com window=30d bucket=1d n_buckets=12
+#   2026-04-26 n= 14 mean=0.78 stddev=0.08
+#   2026-04-27 n=  9 mean=0.62 stddev=0.15
+#   ...
 ```
 
-Returns time-bucketed event statistics (`count`, `mean_score`, `stddev_score` per bucket). A clear downward trend with rising count is worth surfacing to the user before continuing to rely on the source. `window` and `bucket` accept `s`/`m`/`h`/`d` suffixes; `bucket` must be ≤ `window`.
+Returns time-bucketed event statistics (`count`, `mean_score`, `stddev_score` per bucket). A clear downward trend with rising count is worth surfacing to the user before continuing to rely on the source. `window` and `bucket` accept `s`/`m`/`h`/`d` suffixes; `bucket` must be ≤ `window`. Buckets with `count == 1` print `stddev=null` (one observation has no spread — not an error).
 
 ## Workflow 2 — After consuming a source or invoking a capability
 
@@ -157,12 +163,17 @@ scripts/tg-flush
 
 ## Workflow 3 — Investigating an entity with richer queries
 
-Four unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't:
+Five unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't. Reach for them in this order based on what you know:
 
-- `GET /v1/profile` — composite + all dimensions + top failure modes + top capability tags in one round trip. Use for "tell me about X" questions.
-- `POST /v1/retrieve` — past events for one entity, optionally ranked by similarity to a query. The RAG endpoint; use when you need rationales, not just numbers.
-- `POST /v1/rank` — cross-entity ranking by capability tag. The "who's the cheapest/fastest" lens.
-- `GET /v1/capabilities` — discover which capability tags have been rated.
+- `GET /v1/capabilities` — **don't know the tag space yet.** What kinds of tools does TrustGraph track?
+- `POST /v1/discover` — **know the task, not the tag.** "Which tool should I use for X?" Free-text query → ranked entities, grounded in reviewer rationales. Wrapper: `scripts/tg-discover "QUERY" [K]`.
+- `POST /v1/rank` — **know the tag, want the strongest entity within it.** Best `web_search` provider by `cost`.
+- `POST /v1/retrieve` — **know the entity, want evidence.** Rationales and failure modes for one specific entity.
+- `GET /v1/profile` — combined snapshot of one entity (composite + dimensions + top failure modes + top capability tags + event counts + LLM-generated summary, see below). Use for "tell me about X" questions.
+
+### Profile summaries (`/v1/profile.summary`)
+
+Once an entity has ≥ 3 events, the server attaches an LLM-generated **`summary`** to `/v1/profile` responses with a short `synthesis` paragraph and 3-5 `highlights[]`, each citing real `event_id`s retrievable via `/v1/retrieve`. **Relay the synthesis verbatim instead of re-synthesizing from raw events** — the server already paid the LLM cost and applies citation validation against the event store. `summary: null` is the not-yet-generated (or below-floor) case; fall back to your own narrative from the dimensions + retrieve output.
 
 **See `references/queries.md` for request shapes, response fields, filter options, and the routing table for which endpoint to call when a user asks a specific kind of question.**
 
