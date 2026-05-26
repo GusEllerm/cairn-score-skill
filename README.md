@@ -12,6 +12,27 @@ The Code skill is the densest signal path; the MCP is the most discoverable; the
 
 ---
 
+## Before you install: reviewer identity
+
+`mint-key.sh` (called automatically on first write) defaults to an **anonymous** identity (`agent://anon/<uuid>`). Fine for trying things out, but the resulting key is unrecoverable if you wipe `~/.trustgraph/` — your accumulated ratings stay in TrustGraph but become orphaned (attributed to a reviewer-uuid you can no longer reproduce).
+
+**If you want longitudinal signal across reinstalls or fresh machines**, mint once with an explicit identity and back the key up:
+
+```bash
+# Pre-mint with a stable identity (use anything URI-shaped — your name, an
+# agent handle, etc. — but avoid the reserved `agent://trustgraph-*` and
+# `agent://anthropic/*` prefixes).
+bash skill/scripts/mint-key.sh --write agent://your-org/your-name
+
+# The key is now persisted at ~/.trustgraph/keys/<host>.key (mode 0600).
+# Back it up to your secret store of choice (1Password, keychain, etc).
+cat ~/.trustgraph/keys/$(python3 -c 'import urllib.parse; print(urllib.parse.urlparse("https://mep39camvm.us-east-1.awsapprunner.com").hostname)').key
+```
+
+Subsequent `mint-key.sh` calls (from `install.sh`, hooks, the MCP's lazy-mint) will see the existing key and reuse it — all future ratings attribute to your chosen identity. To rotate a key for the same identity, use `--remint` (requires you re-claim the same `reviewer_external_id` on a fresh deployment; the server lets each identity be claimed only once per deployment, so this is mainly for revocation recovery).
+
+---
+
 ## Install path 1 — Claude Code skill
 
 ```bash
