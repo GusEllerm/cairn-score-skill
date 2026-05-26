@@ -16,18 +16,43 @@
 # Usage:
 #   bash install.sh                       # interactive: pick backend
 #   bash install.sh /custom/path          # custom install dir
+#   bash install.sh --desktop             # also register the MCP in Claude
+#                                         #   Desktop's config (uses absolute
+#                                         #   uv path + clone-local paths;
+#                                         #   for one-click install instead,
+#                                         #   build the .mcpb — see README)
 #   TG_RATER_BACKEND=api bash install.sh  # skip backend prompt
 #
 # Honors:
 #   ANTHROPIC_API_KEY    — used if set in env; otherwise install may prompt for it
 #   TG_RATER_BACKEND     — "api" | "claude-cli" (if unset, install asks)
 #   SETTINGS             — override settings.json path (for testing)
+#   DESKTOP_CONFIG       — override Claude Desktop config path (for testing)
 
 set -euo pipefail
 
 for cmd in python3 curl bash; do
   command -v "$cmd" >/dev/null || { echo "install.sh: required tool '$cmd' not found in PATH" >&2; exit 1; }
 done
+
+# Flag parsing — accept --desktop in any position, plus one positional DEST.
+DESKTOP=0
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --desktop) DESKTOP=1; shift ;;
+    -h|--help)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    --*)
+      echo "install.sh: unknown flag '$1' (try --help)" >&2
+      exit 1
+      ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 
 DEST="${1:-$HOME/.claude/skills/trustgraph}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -206,9 +231,90 @@ with open(settings_path, "w") as f:
 PY
 
 echo
-echo "Installed."
+echo "Installed (Claude Code skill)."
+
+# Optional Desktop MCP registration (--desktop flag).
+# Writes the trustgraph entry into Claude Desktop's mcpServers config, using
+# the absolute uv path (Desktop's launchd env lacks ~/.local/bin) and the
+# installed mint-key.sh location (stable, lives at DEST). Doesn't install the
+# Code skill twice — that already ran above.
+if [[ "$DESKTOP" -eq 1 ]]; then
+  echo
+  echo "--- Desktop MCP registration (--desktop) ---"
+
+  MCP_DIR="$SRC/../mcp-server"
+  if [[ ! -f "$MCP_DIR/server.py" ]]; then
+    echo "install.sh: --desktop requires running from the cloned repo where" >&2
+    echo "  $MCP_DIR/server.py exists. Re-runs from the installed location" >&2
+    echo "  can't find the mcp-server tree; clone the repo and re-run." >&2
+    exit 1
+  fi
+  MCP_DIR="$(cd "$MCP_DIR" && pwd)"
+
+  UV_PATH=$(command -v uv || echo "")
+  if [[ -z "$UV_PATH" ]]; then
+    echo "install.sh: 'uv' not on PATH. Install with:" >&2
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    exit 1
+  fi
+
+  if [[ -z "${DESKTOP_CONFIG:-}" ]]; then
+    case "$OSTYPE" in
+      darwin*) DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json" ;;
+      linux*)  DESKTOP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json" ;;
+      *)
+        echo "install.sh: --desktop auto-detect doesn't handle OSTYPE='$OSTYPE'." >&2
+        echo "  Set DESKTOP_CONFIG=/path/to/claude_desktop_config.json explicitly." >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  mkdir -p "$(dirname "$DESKTOP_CONFIG")"
+  [[ -f "$DESKTOP_CONFIG" ]] || echo '{}' > "$DESKTOP_CONFIG"
+
+  BAK="$DESKTOP_CONFIG.bak.install-$(date +%Y%m%d-%H%M%S)"
+  cp "$DESKTOP_CONFIG" "$BAK"
+  echo "  backup → $BAK"
+
+  MCP_DIR="$MCP_DIR" UV_PATH="$UV_PATH" DEST="$DEST" DESKTOP_CONFIG="$DESKTOP_CONFIG" python3 <<'PY'
+import json, os
+path = os.environ["DESKTOP_CONFIG"]
+with open(path) as f:
+    cfg = json.load(f)
+mint_script = os.path.join(os.environ["DEST"], "scripts", "mint-key.sh")
+cfg.setdefault("mcpServers", {})["trustgraph"] = {
+    "command": os.environ["UV_PATH"],
+    "args": [
+        "--directory", os.environ["MCP_DIR"],
+        "run", "--locked",
+        "python", "server.py",
+    ],
+    "env": {
+        "TRUSTGRAPH_MINT_SCRIPT": mint_script,
+        "PYTHONWARNINGS": "ignore",
+    },
+}
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print(f"  registered → mcpServers.trustgraph")
+print(f"    command:     {os.environ['UV_PATH']}")
+print(f"    mcp-server:  {os.environ['MCP_DIR']}")
+print(f"    mint-script: {mint_script}")
+PY
+
+  echo
+  echo "  ⚠  Restart Claude Desktop (Cmd+Q on macOS, not just close-window) to load the MCP."
+  echo "  Verify in Desktop's compose UI — 'trustgraph' should appear with 10 tools."
+  echo
+  echo "  One-click alternative: drop the .mcpb instead of editing JSON:"
+  echo "    cd '$MCP_DIR' && bash build-mcpb.sh   # builds dist/trustgraph.mcpb"
+  echo "    open ../dist/trustgraph.mcpb           # Desktop installs from one file"
+fi
+
 echo
-echo "Verify:"
+echo "Verify (Code skill):"
 echo "  $DEST/scripts/tg-score data_source https://example.com"
 echo "  ↳ should print one line like '0.50 0.00 null' (uninformed prior for an untouched entity)"
 echo
@@ -216,4 +322,5 @@ echo "Hooks fire on NEW Claude Code sessions. To enable in the current session, 
 echo "in Claude Code (or just start a fresh session). Test by asking Claude to use any MCP"
 echo "tool or fetch a URL — the rating happens silently in the background."
 echo
-echo "Uninstall: bash $DEST/uninstall.sh"
+echo "Diagnostics: bash $DEST/scripts/tg-doctor"
+echo "Uninstall:   bash $DEST/uninstall.sh"
