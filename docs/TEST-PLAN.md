@@ -59,28 +59,11 @@ Everything else (install / verify state / teardown commands) is now known to wor
   ```
 - [ ] Clean slate: no prior install state
   ```bash
-  bash docs/_reset-trustgraph-state.sh 2>/dev/null || cat <<'RESET' | bash
-    rm -rf ~/.claude/skills/trustgraph ~/.trustgraph
-    python3 -c "
-    import json, os
-    p = os.path.expanduser('~/.claude/settings.json')
-    if os.path.exists(p):
-        c = json.load(open(p))
-        for k in ('hooks','env'):
-            if k in c:
-                c[k] = {kk:vv for kk,vv in c[k].items() if 'trustgraph' not in str(vv).lower() and not (kk.startswith('TG_') or kk.startswith('TRUSTGRAPH_'))}
-                if not c[k]: del c[k]
-        json.dump(c, open(p,'w'), indent=2); open(p,'a').write('\n')
-    p = os.path.expanduser('~/Library/Application Support/Claude/claude_desktop_config.json')
-    if os.path.exists(p):
-        c = json.load(open(p))
-        if 'mcpServers' in c and 'trustgraph' in c['mcpServers']:
-            del c['mcpServers']['trustgraph']
-            if not c['mcpServers']: del c['mcpServers']
-            json.dump(c, open(p,'w'), indent=2); open(p,'a').write('\n')
-    print('clean')
-    "
-  RESET
+  bash docs/_reset-trustgraph-state.sh
+  # → prints `clean` on success. Idempotent — safe to re-run between tests.
+  # Removes: ~/.claude/skills/trustgraph/, ~/.trustgraph/, trustgraph hooks
+  # and TG_*/TRUSTGRAPH_* env from settings.json, mcpServers.trustgraph from
+  # Claude Desktop config.
   ```
 
 ---
