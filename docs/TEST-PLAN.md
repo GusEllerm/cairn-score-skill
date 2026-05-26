@@ -140,7 +140,7 @@ Everything else (install / verify state / teardown commands) is now known to wor
   ```bash
   python3 -c "import json; c=json.load(open('$HOME/Library/Application Support/Claude/claude_desktop_config.json')); print(json.dumps(c.get('mcpServers',{}).get('trustgraph'), indent=2))"
   ```
-- [ ] Backup file created with `bak.install-` prefix in the Claude Desktop config directory
+- [X] Backup file created with `bak.install-` prefix in the Claude Desktop config directory
   ```bash
   ls -1t "$HOME/Library/Application Support/Claude/" | grep "claude_desktop_config.json.bak.install-" | head -3
   # expect: one entry per --desktop run, newest first, timestamp matches the install
@@ -148,22 +148,30 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Smoke test (Desktop side)
 
-- [ ] **Fully quit** Claude Desktop (Cmd+Q on macOS) and reopen
-- [ ] **Settings → Connectors** (newer Desktop builds) or **Settings → Developer → MCP** (older) — `trustgraph` should appear with an active/green status and the 10 tools listed under it. If you don't see it, check `~/Library/Logs/Claude/mcp.log` for `[trustgraph] Server started and connected successfully` — a successful spawn means it's loaded; just look harder in the UI (some versions group MCPs under "Connectors → Custom" or similar).
-- [ ] Tool picker in compose — start a new conversation, look for the 🛠/tools icon. The trustgraph tools should be reachable from there (grouped by source).
-- [ ] Type `/` in compose — **`trustgraph-proactive`** should appear in the slash-command picker
-- [ ] Test prompt: **"Tell me about the trust profile of `data_source / canary://known-good`."** — expect `profile` to be called, summary returned
+- [X] **Fully quit** Claude Desktop (Cmd+Q on macOS) and reopen
+- [X] **Settings → Connectors** (newer Desktop builds) or **Settings → Developer → MCP** (older) — `trustgraph` should appear with an active/green status and the 10 tools listed under it. If you don't see it, check `~/Library/Logs/Claude/mcp.log` for `[trustgraph] Server started and connected successfully` — a successful spawn means it's loaded; just look harder in the UI (some versions group MCPs under "Connectors → Custom" or similar).
+- [X] Tool picker in compose — start a new conversation, look for the 🛠/tools icon. The trustgraph tools should be reachable from there (grouped by source).
+- [X] Type `/` in compose — **`trustgraph-proactive`** should appear in the slash-command picker
+- [X] Test prompt: **"Tell me about the trust profile of `data_source / canary://known-good`."** — expect `profile` to be called, summary returned
 
 ### Smoke test (Code side, parallel)
 
-- [ ] In a Claude Code session, ask: **"Fetch https://example.com"** — hooks should fire silently
-- [ ] `tg-doctor` reports green for both key file (URL-scoped path) and queue
+- [X] In a Claude Code session, ask: **"Fetch https://example.com"** — hooks should fire silently
+- [X] `tg-doctor` reports green for both key file (URL-scoped path) and queue
 
 ### Coexistence check
 
 - [ ] Both surfaces share `~/.trustgraph/keys/mep39camvm.us-east-1.awsapprunner.com.key` — i.e. one reviewer identity for ratings from both
   ```bash
+  # The key file is LAZY-MINTED — it only appears the first time something
+  # calls a write endpoint (Code-side: trigger a rate via the smoke above
+  # + end the session so Stop hook flushes; Desktop-side: any `rate` call).
+  # If you just want to force-test the path without waiting, mint manually:
+  bash ~/.claude/skills/trustgraph/scripts/mint-key.sh > /dev/null
   ls ~/.trustgraph/keys/
+  # → expect: mep39camvm.us-east-1.awsapprunner.com.key (47 bytes, mode 0600)
+  # Calling mint-key.sh a second time returns the cached key — same identity
+  # for whichever surface mints next.
   ```
 
 ### Teardown
