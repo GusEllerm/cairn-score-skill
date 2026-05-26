@@ -279,7 +279,7 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Build the skill zip (if not already current)
 
-- [ ] Rebuild from current source
+- [X] Rebuild from current source
   ```bash
   cd /Users/gusellerm/Projects/trustgraph-skill/skill && \
     rm -f ../dist/trustgraph-skill.zip && \
@@ -288,18 +288,18 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Install
 
-- [ ] Open `claude.ai` in browser → Settings → Capabilities → Skills (UI path may vary)
-- [ ] Upload `dist/trustgraph-skill.zip`
-- [ ] Skill appears in the list, with the description from `SKILL.md` frontmatter
+- [X] Open `claude.ai` in browser → Settings → Capabilities → Skills (UI path may vary)
+- [X] Upload `dist/trustgraph-skill.zip`
+- [X] Skill appears in the list, with the description from `SKILL.md` frontmatter
 
 ### Smoke
 
-- [ ] In a new claude.ai conversation, ask a trustgraph-related question (e.g. **"Check the trust score of https://example.com using trustgraph"**)
-- [ ] Verify the skill loads (the description is the router signal) and Claude attempts the curl-based path documented in `references/queries.md`
+- [X] In a new claude.ai conversation, ask a trustgraph-related question (e.g. **"Check the trust score of https://example.com using trustgraph"**)
+- [X] Verify the skill loads (the description is the router signal) and Claude attempts the curl-based path documented in `references/queries.md`
 
 ### Teardown
 
-- [ ] Remove the uploaded skill from claude.ai → Settings → Capabilities → Skills
+- [X] Remove the uploaded skill from claude.ai → Settings → Capabilities → Skills
 
 ---
 
@@ -309,20 +309,20 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Setup
 
-- [ ] **Reset** (from pre-flight block)
-- [ ] Install both via the unified command
+- [X] **Reset** (from pre-flight block)
+- [X] Install both via the unified command
   ```bash
   bash /Users/gusellerm/Projects/trustgraph-skill/skill/install.sh --desktop
   ```
-- [ ] Pick backend, restart Desktop, restart Code session
+- [X] Pick backend, restart Desktop, restart Code session
 
 ### Coexistence check
 
-- [ ] Submit a rating from Code-side first
+- [X] Submit a rating from Code-side first
   - In a Claude Code session, fetch any URL — hooks fire, rate gets queued
   - End session → Stop hook flushes
   - Note the API key path: `cat ~/.trustgraph/keys/mep39camvm.us-east-1.awsapprunner.com.key` (47-char `tg_...` value)
-- [ ] Submit a rating from Desktop-side
+- [X] Submit a rating from Desktop-side
   - In a Desktop conversation, ask Claude to rate something via `mcp__trustgraph__rate`
   - Verify it succeeds (no second mint happens)
 - [ ] Confirm key file unchanged
@@ -331,9 +331,9 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Failure-mode probes (optional but worthwhile)
 
-- [ ] Concurrent rate: open two Code sessions, both hitting different URLs — verify both ratings accumulate (queue lock + fcntl ordering working)
-- [ ] Stale key: `chmod 000` the key file, attempt a `rate` from Desktop, verify the 401-retry kicks in (mints fresh key, retries, succeeds). Restore: `chmod 600`.
-- [ ] Debug log: set `TRUSTGRAPH_DEBUG_LOG=/tmp/tg.log` in either install, drive one rate, verify `/tmp/tg.log` exists at mode 600 with one JSONL line per request
+- [X] Concurrent rate: open two Code sessions, both hitting different URLs — verify both ratings accumulate (queue lock + fcntl ordering working)
+- [X] Stale key: `chmod 000` the key file, attempt a `rate` from Desktop, verify the 401-retry kicks in (mints fresh key, retries, succeeds). Restore: `chmod 600`.
+- [X] Debug log: set `TRUSTGRAPH_DEBUG_LOG=/tmp/tg.log` in either install, drive one rate, verify `/tmp/tg.log` exists at mode 600 with one JSONL line per request
 
 ### Teardown
 
@@ -347,12 +347,12 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 | Test | Path | Done | Notes |
 |---|---|---|---|
-| A | Code skill via `install.sh` | ☐ | |
-| B | `install.sh --desktop` unified | ☐ | |
-| C | `.mcpb` one-click Desktop install | ☐ | |
-| D | Hand-edit JSON Desktop fallback | ☐ | |
-| E | claude.ai web skill upload | ☐ | |
-| F | Coexistence (Code + Desktop) | ☐ | |
+| A | Code skill via `install.sh` | Yes | |
+| B | `install.sh --desktop` unified | Yes | |
+| C | `.mcpb` one-click Desktop install | Yes | |
+| D | Hand-edit JSON Desktop fallback | Yes | |
+| E | claude.ai web skill upload | Yes | |
+| F | Coexistence (Code + Desktop) | Yes | |
 
 **Production-readiness gate:** A, C, and F all green = ready for the trustgraph site integration.
 

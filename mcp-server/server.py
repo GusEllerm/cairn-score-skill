@@ -1,8 +1,10 @@
 """TrustGraph MCP server.
 
-Phases 0–2 implemented: scaffold, read tools (score, retrieve, rank,
-capabilities), get_rubric. Phase 3 (auth refactor) and Phase 4 (rate) still
-pending. See MCP-PLAN.md (rev 5) for the full design.
+Exposes 10 tools (score, profile, retrieve, rank, capabilities, discover,
+score_batch, score_history, rate, get_rubric) + one prompt
+(trustgraph-proactive) over the TrustGraph reputation API via stdio
+JSON-RPC. Designed to be packaged as a .mcpb bundle for one-click
+install in Claude Desktop, or invoked via JSON config.
 """
 
 # Stdio hygiene: third-party imports may print() during initialization,
@@ -274,10 +276,10 @@ class DiscoverResult(BaseModel):
 
 class EntityRef(BaseModel):
     """Single entity reference for score_batch. Field is `type` (matches
-    the server's wire shape). Yes it shadows the Python builtin — the
-    Field(alias="type") rename tried in Phase 3b broke FastMCP dispatch
-    because model_dump uses the alias, then ** unpacks into kwargs the
-    function doesn't accept. See docs/REVIEW-REPORT-2.md."""
+    the server's wire shape). Yes it shadows the Python builtin — using
+    `Field(alias="type")` to rename to a non-shadowing name breaks
+    FastMCP dispatch (model_dump uses the alias, then ** unpacks into
+    kwargs the function doesn't accept). Live with the shadowing."""
     type: Literal["data_source", "capability", "agent"]  # noqa: A002
     external_id: Annotated[str, Field(min_length=1)]
 
@@ -410,7 +412,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     # Opt-in side-log of every request/response, append-only JSONL, mode 0600.
     # Explicit os.open() is required so the file is never observed at the
     # umask default of 0644 — would otherwise land in Time Machine / iCloud-
-    # synced backups as world-readable per MCP-PLAN.md:289.
+    # synced backups as world-readable.
     debug_log_fd: int | None = None
     debug_path = os.environ.get("TRUSTGRAPH_DEBUG_LOG")
     if debug_path:
@@ -512,9 +514,9 @@ async def _load_api_key(app_ctx: AppContext, *, force_remint: bool = False) -> s
 
 
 # ---- Request helper ----
-# Implements the Errors-table policy from MCP-PLAN.md for read tools: one
-# retry on 5xx, no retry on 429 or timeout, ToolError quotes server error
-# envelope on 4xx.
+# Error policy for read tools: one retry on 5xx (or connection error), no
+# retry on 429 or timeout, ToolError quotes the server error envelope on 4xx.
+# Write tools (rate) layer their own 401 invalidation+retry on top.
 
 async def _request(
     ctx: "Context[ServerSession, AppContext]",
@@ -883,9 +885,9 @@ async def rank(
         body["limit_candidates"] = limit_candidates
     data = await _request(ctx, "POST", "/v1/rank", json=body)
     result = RankResult.model_validate(data)
-    # Gap-fix from REVIEW-REPORT-2: supporting_event carries reviewer
-    # rationale + task — same surface as discover.best_event / retrieve
-    # events. Apply RATIONALE_TRUNCATE here too.
+    # supporting_event carries reviewer rationale + task — same surface as
+    # discover.best_event / retrieve events. Apply RATIONALE_TRUNCATE here
+    # too so all read-side paths cap user-supplied text uniformly.
     for r in result.results:
         if r.supporting_event is not None:
             _truncate_event(r.supporting_event)

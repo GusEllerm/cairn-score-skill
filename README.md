@@ -231,7 +231,7 @@ bash docs/_reset-trustgraph-state.sh
 - `skill/` — Claude Code skill (`SKILL.md`, `references/`, wrapper scripts, installer)
 - `mcp-server/` — Python MCP server + `.mcpb` packaging
 - `dist/` — built artifacts (gitignored; rebuilt by the commands above)
-- `docs/` — test plan, design notes, migration history (for contributors)
+- `docs/` — test plan (`TEST-PLAN.md`), Desktop personalize text (`desktop-personalize.md`), and the reset utility (`_reset-trustgraph-state.sh`)
 
 ---
 
