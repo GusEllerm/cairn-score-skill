@@ -74,44 +74,44 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Install
 
-- [ ] **Reset** (re-run the clean-slate block above if needed)
-- [ ] Run installer
+- [X] **Reset** (re-run the clean-slate block above if needed)
+- [X] Run installer
   ```bash
   bash /Users/gusellerm/Projects/trustgraph-skill/skill/install.sh
   ```
-- [ ] When prompted, pick `2` for `claude-cli` backend (or `1` + provide an Anthropic API key if you prefer the API backend)
-- [ ] Installer prints `Installed (Claude Code skill).`
+- [X] When prompted, pick `2` for `claude-cli` backend (or `1` + provide an Anthropic API key if you prefer the API backend)
+- [X] Installer prints `Installed (Claude Code skill).`
 
 ### Verify install state
 
-- [ ] Skill files in place
+- [X] Skill files in place
   ```bash
   ls ~/.claude/skills/trustgraph/  # expect: SKILL.md  references/  scripts/  install.sh  uninstall.sh  update-skill.sh  README.md  LICENSE
   ```
-- [ ] Hooks registered
+- [X] Hooks registered
   ```bash
   python3 -c "import json; c=json.load(open('$HOME/.claude/settings.json')); print(sorted(c.get('hooks',{}).keys()))"
   # expect: ['PostToolUse', 'PostToolUseFailure', 'Stop']
   ```
-- [ ] `tg-doctor` all green (last-flush will warn — that's expected before first flush)
+- [X] `tg-doctor` all green (last-flush will warn — that's expected before first flush)
   ```bash
   bash ~/.claude/skills/trustgraph/scripts/tg-doctor
   ```
 
 ### Smoke test (Code skill)
 
-- [ ] Quit and reopen Claude Code (or run `/hooks` in the current session)
-- [ ] Ask Claude: **"Fetch https://news.ycombinator.com and summarise the front page."**
-- [ ] After completion, check the hook log
+- [X] Quit and reopen Claude Code (or run `/hooks` in the current session)
+- [X] Ask Claude: **"Fetch https://news.ycombinator.com and summarise the front page."**
+- [X] After completion, check the hook log
   ```bash
   tail -50 ~/.trustgraph/hook.log
   # expect: "dispatching briefing (async)" + "rater exited 0"
   ```
-- [ ] End that session (close the terminal or run `/exit`); the `Stop` hook should flush. Re-run `tg-doctor` and look for `last flush: Xs ago`.
+- [X] End that session (close the terminal or run `/exit`); the `Stop` hook should flush. Re-run `tg-doctor` and look for `last flush: Xs ago`.
 
 ### Teardown
 
-- [ ] Uninstall
+- [X] Uninstall
   ```bash
   bash ~/.claude/skills/trustgraph/uninstall.sh
   rm -rf ~/.claude/skills/trustgraph ~/.trustgraph
@@ -125,22 +125,26 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Install
 
-- [ ] **Reset** (from pre-flight block)
-- [ ] Run unified installer
+- [X] **Reset** (from pre-flight block)
+- [X] Run unified installer
   ```bash
   bash /Users/gusellerm/Projects/trustgraph-skill/skill/install.sh --desktop
   ```
-- [ ] Pick backend as before
-- [ ] Installer prints `registered → mcpServers.trustgraph` with absolute `uv` path
+- [X] Pick backend as before
+- [X] Installer prints `registered → mcpServers.trustgraph` with absolute `uv` path
 
 ### Verify install state
 
-- [ ] Code skill present at `~/.claude/skills/trustgraph/`
-- [ ] Desktop config has the trustgraph entry
+- [X] Code skill present at `~/.claude/skills/trustgraph/`
+- [X] Desktop config has the trustgraph entry
   ```bash
   python3 -c "import json; c=json.load(open('$HOME/Library/Application Support/Claude/claude_desktop_config.json')); print(json.dumps(c.get('mcpServers',{}).get('trustgraph'), indent=2))"
   ```
 - [ ] Backup file created with `bak.install-` prefix in the Claude Desktop config directory
+  ```bash
+  ls -1t "$HOME/Library/Application Support/Claude/" | grep "claude_desktop_config.json.bak.install-" | head -3
+  # expect: one entry per --desktop run, newest first, timestamp matches the install
+  ```
 
 ### Smoke test (Desktop side)
 
