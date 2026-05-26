@@ -109,6 +109,8 @@ Each hit carries the entity ref, `best_similarity` (cosine, primary ranking key 
 
 **Brand-new entities with zero embedded rationales never surface here** — they have no vectors to match against. Use `GET /v1/capabilities` to browse the tag space cold.
 
+**Context surprise.** Results aggregate rationales **across all contexts** for each entity, but each hit's `composite_score` is read from `context="general"`. An entity whose rationales live almost entirely under a non-general context can match a discovery query while showing `{value: 0.5, confidence: 0.0, last_updated: null}` on its composite — that's the scorer's prior, not a real reading. **Treat `confidence == 0.0` on a discover hit as "matched on rationales but no general-context score yet", not "untrusted".** Pair with `GET /v1/profile?type=...&external_id=...&context=<the-rationale's-context>` if you need the real score.
+
 If `POST /v1/discover` returns 503, the deployment has embeddings disabled — discovery has no non-vector fallback (unlike `/v1/retrieve`, which falls back to recency). Use `/v1/capabilities` + `/v1/rank` to browse and pick by tag instead.
 
 ## `GET /v1/capabilities` — discover what's been rated
