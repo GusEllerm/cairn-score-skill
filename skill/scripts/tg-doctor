@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# tg-doctor — one-shot diagnostic for a trustgraph install.
+#
+# Prints one ✓/✗ line per check. Exits 0 if everything is green, 1 if any
+# check fails. Use after install, after upgrading, or when something
+# silently stopped working (queue not flushing, ratings not landing, etc.).
+#
+# Usage: scripts/tg-doctor
+#
+# Checks: key file (present + mode 0600), queue file (size + oldest age),
+# last-flush sentinel, rater backend resolution, mint-key.sh executable +
+# curl/python3 on PATH, TrustGraph API /livez reachability.
+#
+# Honors the same env vars as the other tg-* wrappers:
+#   TRUSTGRAPH_BASE_URL, TRUSTGRAPH_KEY_FILE, TRUSTGRAPH_QUEUE,
+#   TRUSTGRAPH_MINT_SCRIPT, TG_RATER_BACKEND, TG_ANTHROPIC_KEY_FILE,
+#   ANTHROPIC_API_KEY
+
+set -uo pipefail   # NOT -e: we want to run every check before bailing.
+command -v python3 >/dev/null || { echo "tg-doctor: python3 required" >&2; exit 127; }
+
+: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${TRUSTGRAPH_QUEUE:=$HOME/.trustgraph/queue.jsonl}"
+: "${TG_RATER_BACKEND:=auto}"
+: "${TG_ANTHROPIC_KEY_FILE:=$HOME/.trustgraph/anthropic-key}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+: "${TRUSTGRAPH_MINT_SCRIPT:=$SCRIPT_DIR/mint-key.sh}"
+
+# Derive the URL-scoped default key file if not overridden.
+if [[ -z "${TRUSTGRAPH_KEY_FILE:-}" ]]; then
+  URL_HOST=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.urlparse(sys.argv[1]).hostname or "default")' "$TRUSTGRAPH_BASE_URL")
+  TRUSTGRAPH_KEY_FILE="$HOME/.trustgraph/keys/${URL_HOST}.key"
+fi
+
+FAIL=0
+
+# `_check NAME STATUS DETAIL` — prints one aligned line.
+# STATUS: ok | warn | fail (fail sets FAIL=1)
+_check() {
+  local name="$1"; local status="$2"; local detail="$3"
+  case "$status" in
+    ok)   printf '  ✓ %-16s %s\n' "$name" "$detail" ;;
+    warn) printf '  ⚠ %-16s %s\n' "$name" "$detail" ;;
+    fail) printf '  ✗ %-16s %s\n' "$name" "$detail"; FAIL=1 ;;
+  esac
+}
+
+# Pretty-print "<secs> ago" or "<mins>m ago" / "<hours>h ago" / "<days>d ago".
+_age_str() {
+  python3 -c '
+import sys, time
+secs = max(0, int(time.time()) - int(sys.argv[1]))
+if secs < 60: print(f"{secs}s ago")
+elif secs < 3600: print(f"{secs // 60}m ago")
+elif secs < 86400: print(f"{secs // 3600}h ago")
+else: print(f"{secs // 86400}d ago")
+' "$1"
+}
+
+echo "tg-doctor — trustgraph install diagnostic"
+echo "──────────────────────────────────────────"
+
+# 1. Key file
+if [[ -s "$TRUSTGRAPH_KEY_FILE" ]]; then
+  mode=$(python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$TRUSTGRAPH_KEY_FILE")
+  mtime=$(python3 -c 'import os, sys; print(int(os.path.getmtime(sys.argv[1])))' "$TRUSTGRAPH_KEY_FILE")
+  age=$(_age_str "$mtime")
+  if [[ "$mode" == "0o600" ]]; then
+    _check "key file" ok "$TRUSTGRAPH_KEY_FILE (mode $mode, minted $age)"
+  else
+    _check "key file" fail "$TRUSTGRAPH_KEY_FILE exists but mode $mode (expected 0o600)"
+  fi
+else
+  _check "key file" warn "$TRUSTGRAPH_KEY_FILE (none yet — will mint on first rate call)"
+fi
+
+# 2. Queue
+if [[ -s "$TRUSTGRAPH_QUEUE" ]]; then
+  n=$(wc -l < "$TRUSTGRAPH_QUEUE" | tr -d ' ')
+  mtime=$(python3 -c 'import os, sys; print(int(os.path.getmtime(sys.argv[1])))' "$TRUSTGRAPH_QUEUE")
+  age=$(_age_str "$mtime")
+  _check "queue" ok "$n event(s) pending, oldest write $age"
+else
+  _check "queue" ok "empty ($TRUSTGRAPH_QUEUE)"
+fi
+
+# 3. Queue.dead (warn if present)
+if [[ -s "${TRUSTGRAPH_QUEUE}.dead" ]]; then
+  n=$(wc -l < "${TRUSTGRAPH_QUEUE}.dead" | tr -d ' ')
+  _check "queue.dead" warn "$n corrupted line(s) at ${TRUSTGRAPH_QUEUE}.dead (inspect + rm to clear)"
+fi
+
+# 4. Last-flush sentinel
+SENTINEL="$(dirname "$TRUSTGRAPH_QUEUE")/last-flush"
+if [[ -s "$SENTINEL" ]]; then
+  when=$(_age_str "$(<"$SENTINEL")")
+  _check "last flush" ok "$when"
+else
+  _check "last flush" warn "no sentinel (nothing has flushed yet, or pre-Phase-5 install)"
+fi
+
+# 5. Rater backend
+HAS_ANTHROPIC_KEY=no
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]] || [[ -s "$TG_ANTHROPIC_KEY_FILE" ]]; then
+  HAS_ANTHROPIC_KEY=yes
+fi
+HAS_CLAUDE=no
+command -v claude >/dev/null && HAS_CLAUDE=yes
+
+case "$TG_RATER_BACKEND" in
+  api)
+    if [[ "$HAS_ANTHROPIC_KEY" == "yes" ]]; then
+      _check "rater backend" ok "api (ANTHROPIC_API_KEY available)"
+    else
+      _check "rater backend" fail "api selected but no ANTHROPIC_API_KEY (env or $TG_ANTHROPIC_KEY_FILE)"
+    fi
+    ;;
+  claude-cli)
+    if [[ "$HAS_CLAUDE" == "yes" ]]; then
+      _check "rater backend" ok "claude-cli ('claude' on PATH)"
+    else
+      _check "rater backend" fail "claude-cli selected but 'claude' not on PATH"
+    fi
+    ;;
+  auto)
+    if [[ "$HAS_ANTHROPIC_KEY" == "yes" ]]; then
+      _check "rater backend" ok "auto → api"
+    elif [[ "$HAS_CLAUDE" == "yes" ]]; then
+      _check "rater backend" ok "auto → claude-cli"
+    else
+      _check "rater backend" fail "auto: neither ANTHROPIC_API_KEY nor 'claude' available"
+    fi
+    ;;
+  *)
+    _check "rater backend" fail "unknown TG_RATER_BACKEND=$TG_RATER_BACKEND (want api|claude-cli|auto)"
+    ;;
+esac
+
+# 6. mint-key.sh
+if [[ -x "$TRUSTGRAPH_MINT_SCRIPT" ]]; then
+  deps_missing=()
+  command -v python3 >/dev/null || deps_missing+=("python3")
+  command -v curl    >/dev/null || deps_missing+=("curl")
+  if [[ ${#deps_missing[@]} -eq 0 ]]; then
+    _check "mint-key.sh" ok "$TRUSTGRAPH_MINT_SCRIPT (python3 + curl OK)"
+  else
+    _check "mint-key.sh" fail "$TRUSTGRAPH_MINT_SCRIPT executable but missing: ${deps_missing[*]}"
+  fi
+else
+  _check "mint-key.sh" fail "not executable at $TRUSTGRAPH_MINT_SCRIPT"
+fi
+
+# 7. TrustGraph API /livez
+livez_result=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 5 "$TRUSTGRAPH_BASE_URL/livez" 2>&1 || echo "000 0")
+code=$(echo "$livez_result" | awk '{print $1}')
+t_ms=$(echo "$livez_result" | awk '{printf "%.0f", $2 * 1000}')
+case "$code" in
+  200) _check "TrustGraph API" ok "$TRUSTGRAPH_BASE_URL/livez → 200 (${t_ms}ms)" ;;
+  000) _check "TrustGraph API" fail "$TRUSTGRAPH_BASE_URL/livez unreachable (network error / timeout)" ;;
+  *)   _check "TrustGraph API" fail "$TRUSTGRAPH_BASE_URL/livez → $code" ;;
+esac
+
+echo
+if [[ "$FAIL" -eq 0 ]]; then
+  echo "✓ all checks passed"
+  exit 0
+else
+  echo "✗ some checks failed — see above"
+  exit 1
+fi
