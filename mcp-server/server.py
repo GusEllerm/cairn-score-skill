@@ -205,10 +205,9 @@ class RetrieveAggregates(BaseModel):
 
 class RetrieveResult(BaseModel):
     model_config = ConfigDict(extra="allow")
-    entity: dict[str, str] | None = None
+    entity: dict[str, str]
     events: list[Event]
     aggregates: RetrieveAggregates | None = None
-    n_events_total: int | None = None
     displayed_context: str | None = None
 
 
@@ -272,7 +271,7 @@ class DiscoverResult(BaseModel):
 
 class EntityRef(BaseModel):
     """Single entity reference for score_batch."""
-    type: Literal["data_source", "capability"]
+    type: Literal["data_source", "capability", "agent"]
     external_id: Annotated[str, Field(min_length=1)]
 
 
@@ -497,13 +496,13 @@ async def _request(
 
 @mcp.tool()
 async def score(
-    type: Literal["data_source", "capability"],
+    type: Literal["data_source", "capability", "agent"],
     external_id: Annotated[str, Field(min_length=1)],
     detail: Literal["summary", "full"] = "summary",
     context: str | None = None,
     scorer: str | None = None,
-    top_failure_modes: Annotated[int | None, Field(ge=1, le=50)] = None,
-    top_capability_tags: Annotated[int | None, Field(ge=1, le=50)] = None,
+    top_failure_modes: Annotated[int | None, Field(ge=1, le=20)] = None,
+    top_capability_tags: Annotated[int | None, Field(ge=1, le=20)] = None,
     ctx: Context[ServerSession, AppContext] | None = None,
 ) -> ScoreSummary | EntityProfile:
     """Check the trust score of a URL or capability before consuming/invoking it.
@@ -557,10 +556,10 @@ async def score(
 
 @mcp.tool()
 async def retrieve(
-    type: Literal["data_source", "capability"],
+    type: Literal["data_source", "capability", "agent"],
     external_id: Annotated[str, Field(min_length=1)],
     query: str | None = None,
-    k: Annotated[int, Field(ge=1, le=100)] = 5,
+    k: Annotated[int, Field(ge=1, le=50)] = 5,
     context: str | None = None,
     dimensions_present: list[DimensionName] | None = None,
     failure_modes_any: list[str] | None = None,
@@ -628,7 +627,7 @@ async def retrieve(
 async def rank(
     capability_tag: Annotated[str, Field(min_length=1)],
     rank_by: RankByName = "composite",
-    k: Annotated[int, Field(ge=1, le=100)] = 5,
+    k: Annotated[int, Field(ge=1, le=50)] = 5,
     min_events: Annotated[int, Field(ge=1)] = 3,
     include_supporting_event: bool = False,
     context: str | None = None,
@@ -769,7 +768,7 @@ async def score_batch(
 
 @mcp.tool()
 async def score_history(
-    type: Literal["data_source", "capability"],
+    type: Literal["data_source", "capability", "agent"],
     external_id: Annotated[str, Field(min_length=1)],
     window: str = "7d",
     bucket: str = "1d",
@@ -868,7 +867,7 @@ class RateResult(BaseModel):
 
 @mcp.tool()
 async def rate(
-    type: Literal["data_source", "capability"],
+    type: Literal["data_source", "capability", "agent"],
     external_id: Annotated[str, Field(min_length=1)],
     score: Annotated[float, Field(ge=0, le=1, description="Holistic 0–1 rating")],
     weight: Annotated[float, Field(gt=0, le=1)] = 1.0,
@@ -939,6 +938,11 @@ async def rate(
                 "server returns 422. Use a different prefix."
             )
 
+    # /v1/scores enforces additionalProperties: false server-side — any key
+    # not in the documented set (reviewee, context, score, weight, task,
+    # rationale, dimensions, failure_modes, metrics, task_tags, observed_at)
+    # returns 422. We build the body field-by-field below; do not add fields
+    # without checking the live spec.
     body: dict = {
         "reviewee": {"type": type, "external_id": external_id},
         "score": score,
@@ -953,14 +957,19 @@ async def rate(
     if rationale:
         body["rationale"] = rationale
 
-    # 2. Dimensions: reject unknown keys; range-check values.
+    # 2. Dimensions: snake_case key shape check; range-check values.
+    # The server accepts additionalProperties: true on dimensions, so ad-hoc
+    # keys (e.g. "helpfulness", "engagement") are allowed for per-domain
+    # scoring. Canonical keys (DIMENSION_KEYS) aggregate cross-reviewer in
+    # /v1/profile; ad-hoc keys are per-reviewer only — get_rubric() documents
+    # the canonical set.
     if dimensions:
-        bad_keys = sorted(set(dimensions) - DIMENSION_KEYS)
+        bad_keys = sorted(k for k in dimensions if not METRIC_KEY_RE.match(k))
         if bad_keys:
             raise ToolError(
-                f"unknown dimension keys: {bad_keys}; allowed: "
-                f"{sorted(DIMENSION_KEYS)}. Remove the bad keys or pick from "
-                "the allowed list."
+                f"invalid dimension keys: {bad_keys}; must match "
+                f"{METRIC_KEY_RE.pattern!r} (lowercase snake, ≤32 chars). "
+                f"Canonical keys aggregate cross-reviewer: {sorted(DIMENSION_KEYS)}."
             )
         for k, v in dimensions.items():
             if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 <= v <= 1):
