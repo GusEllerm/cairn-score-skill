@@ -401,7 +401,10 @@ class AppContext:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    base_url = os.environ.get("TRUSTGRAPH_BASE_URL", DEFAULT_BASE_URL)
+    # `or DEFAULT_BASE_URL` (not just dict-get default) so an empty-string
+    # env var falls through too — relevant under .mcpb manifest config where
+    # cleared user_config values substitute as "" rather than being absent.
+    base_url = os.environ.get("TRUSTGRAPH_BASE_URL") or DEFAULT_BASE_URL
     timeout = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=5.0)
 
     # Opt-in side-log of every request/response, append-only JSONL, mode 0600.

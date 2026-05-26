@@ -1,0 +1,26 @@
+# Files excluded from the .mcpb bundle.
+# Bundle includes: manifest.json, pyproject.toml, uv.lock, server.py, bundled/mint-key.sh.
+# Everything matched here stays in the source tree but is omitted from the packed extension.
+
+# Python runtime artifacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Dev tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Spec-drift tooling — dev-only, not needed at runtime
+openapi.snapshot.json
+spec-check.sh
+
+# Build-script artifacts
+build-mcpb.sh
+.mcpbignore
+
+# Local-dev / OS junk
+.DS_Store

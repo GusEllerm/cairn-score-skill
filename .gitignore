@@ -11,6 +11,10 @@ __pycache__/
 # Distribution artifacts
 *.tar.gz
 *.zip
+*.mcpb
+
+# .mcpb build staging — populated by mcp-server/build-mcpb.sh, not source-controlled
+mcp-server/bundled/
 
 # OS junk
 .DS_Store

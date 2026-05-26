@@ -1,0 +1,72 @@
+{
+  "manifest_version": "0.4",
+  "name": "trustgraph-mcp",
+  "display_name": "TrustGraph",
+  "version": "0.1.0",
+  "description": "Trust + reputation lookups for URLs, MCP servers, and tools, backed by the TrustGraph API.",
+  "long_description": "Exposes 10 tools (score, profile, retrieve, rank, capabilities, discover, score_batch, score_history, rate, get_rubric) plus a selectable proactive-trust-check prompt over the TrustGraph reputation API. Use the read tools to check the trust of a source before consuming it, and `rate` to submit ratings after — feeding the community's accumulated signal.\n\nWrite endpoints auto-mint an API key on first use (stored locally at mode 0600, URL-scoped to the deployment). Read endpoints are unauthenticated.\n\nThe paired `trustgraph-proactive` prompt — selectable from Desktop's `/` command picker — pins the auto-firing protocol for one conversation. For always-on firing, paste the equivalent text into Claude Desktop's Profile preferences (see docs/desktop-personalize.md in the repo).",
+  "author": {
+    "name": "Gus Ellermaa"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GusEllerm/trustgraph-skill"
+  },
+  "license": "MIT",
+  "keywords": ["trust", "reputation", "rating", "ai-safety", "anthropic", "trustgraph", "mcp"],
+  "server": {
+    "type": "uv",
+    "entry_point": "server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "python", "server.py"],
+      "env": {
+        "TRUSTGRAPH_BASE_URL": "${user_config.trustgraph_base_url}",
+        "TRUSTGRAPH_DEBUG_LOG": "${user_config.debug_log_path}",
+        "TRUSTGRAPH_MINT_SCRIPT": "${__dirname}/bundled/mint-key.sh",
+        "PYTHONWARNINGS": "ignore"
+      }
+    }
+  },
+  "tools": [
+    {"name": "score",          "description": "Trust pre-check for one URL or MCP capability (composite + confidence + diagnostics)"},
+    {"name": "profile",        "description": "Full snapshot of one entity — dimensions + top failure modes + top capability tags + LLM-generated summary"},
+    {"name": "retrieve",       "description": "Past rating events for one entity, optionally ranked by similarity to a query"},
+    {"name": "rank",           "description": "Cross-entity ranking on a chosen dimension within a known capability tag"},
+    {"name": "capabilities",   "description": "List capability tags rated across the corpus"},
+    {"name": "discover",       "description": "Free-text task description → ranked entities (searches the TrustGraph rating corpus, not the host's available tools)"},
+    {"name": "score_batch",    "description": "Batch trust lookup for up to 100 entity refs in one call"},
+    {"name": "score_history",  "description": "Time-bucketed score trend for one entity — the \"is X getting worse?\" lens"},
+    {"name": "rate",           "description": "Submit a rating after consuming/invoking (auto-mints + caches the API key on first call)"},
+    {"name": "get_rubric",     "description": "Full scoring rubric: anchors, dimensions with inversion notes, weight semantics, examples"}
+  ],
+  "prompts": [
+    {
+      "name": "trustgraph-proactive",
+      "description": "Pin at conversation start to fire score before / rate after non-trivial fetches/tool-calls — the closest analog to the Code skill's PostToolUse hooks inside Desktop's UX."
+    }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "python": ">=3.11"
+    }
+  },
+  "user_config": {
+    "trustgraph_base_url": {
+      "type": "string",
+      "title": "TrustGraph deployment URL",
+      "description": "Base URL of the TrustGraph API. ⚠️ The default is an AWS App Runner subdomain on a shared zone — for any non-experimental use, point this at your own deployment to avoid DNS-takeover risk on the shared host.",
+      "required": false,
+      "default": "https://mep39camvm.us-east-1.awsapprunner.com"
+    },
+    "debug_log_path": {
+      "type": "string",
+      "title": "Debug log path (optional)",
+      "description": "If set, every request/response is appended here as JSONL (mode 0600). Useful when diagnosing why a tool call didn't behave. Leave empty to disable.",
+      "required": false,
+      "default": ""
+    }
+  }
+}

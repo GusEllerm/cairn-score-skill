@@ -1,78 +1,90 @@
 # trustgraph — reputation tooling for Claude Code + Claude Desktop
 
-Two surfaces over the same TrustGraph reputation API:
+Pick the install path that matches how you use Claude. Both back the same TrustGraph reputation API and coordinate on the same `~/.trustgraph/` state via `fcntl.flock`, so ratings accumulate under one reviewer identity no matter which surface produced them.
 
-- **`skill/`** — a Claude Code skill that rates every external resource your agent touches (WebFetch, WebSearch, MCP tools, curl invocations) **invisibly in the background** via `PostToolUse` hooks. The model never sees TrustGraph in chat.
-- **`mcp-server/`** — an MCP server that exposes the same trust capabilities to **Claude Desktop** (and any MCP-capable host: Cursor, Zed, Continue, the API directly) as ten callable tools. The model chooses when to invoke; tool calls are visible in chat.
+| Path | For | Behavior | Install |
+|---|---|---|---|
+| **Claude Code skill** | CLI / agent users who want **continuous, invisible rating** of every tool call | `PostToolUse` hooks rate every WebFetch / WebSearch / MCP / curl call without the model seeing anything in chat. Highest signal density. | `bash skill/install.sh` |
+| **Claude Desktop MCP** (`.mcpb`) | Desktop users who want **visible tool calls** for trust checks | Ten MCP tools + one selectable prompt. Model decides when to call; tool invocations show in chat. Auto-firing requires the pinned prompt or a custom instruction. | Drag `dist/trustgraph.mcpb` onto Claude Desktop — one click |
+| **claude.ai web skill** | Users on the web client only | The same procedural framing + references, loaded by the claude.ai skill router. No local install. | Upload `dist/trustgraph-skill.zip` at `claude.ai → Settings → Capabilities → Skills` |
 
-Both surfaces share `~/.trustgraph/` state — same key file, same reviewer identity (first-mint-wins), so ratings accumulate under one signal regardless of which surface produced them.
+The Code skill is the densest signal path; the MCP is the most discoverable; the web skill is the broadest reach. Pick by need; they coexist cleanly.
 
-## Quick install — Claude Code skill
+---
+
+## Install path 1 — Claude Code skill
 
 ```bash
 git clone https://github.com/GusEllerm/trustgraph-skill.git ~/code/trustgraph-skill && \
   bash ~/code/trustgraph-skill/skill/install.sh
 ```
 
-Clone the repo anywhere convenient (the example uses `~/code/`); the installer copies the skill content from `skill/` to `~/.claude/skills/trustgraph/` and registers the hooks.
+Clone the repo anywhere convenient (the example uses `~/code/`); the installer copies the skill content to `~/.claude/skills/trustgraph/` and registers the hooks.
 
 The installer prompts for a rater backend:
-- **`api`** — direct Anthropic API. Needs an API key from `console.anthropic.com`. Cheap, fast.
+- **`api`** — direct Anthropic API. Needs a key from `console.anthropic.com`. Cheap, fast.
 - **`claude-cli`** — uses Claude Code's existing auth (claude.ai subscription). No API key needed. Slower, more subscription-quota.
 
 Then start a fresh Claude Code session. Hooks fire automatically.
 
-To update later: `bash ~/code/trustgraph-skill/skill/update-skill.sh` (the script does `git pull` in the clone and re-runs `install.sh`).
+To update later: `bash ~/code/trustgraph-skill/skill/update-skill.sh`.
 
-## Claude Desktop (MCP server)
+---
 
-The same TrustGraph capabilities are exposed under `mcp-server/` as a ten-tool MCP server: `score`, `profile`, `retrieve`, `rank`, `capabilities`, `discover`, `score_batch`, `score_history`, `rate`, `get_rubric`.
+## Install path 2 — Claude Desktop (`.mcpb` bundle)
 
-Unlike the skill — which hooks in invisibly on every tool call — MCP tool calls are visible in chat. The model decides when to invoke; the agent's standing context carries the tool descriptions (~2200 tokens for the ten, ~500 of which is the rubric condensate embedded in `rate`).
+`.mcpb` (Anthropic's MCP Bundle format) ships the server as a single double-clickable file. Desktop's installer reads the bundled `manifest.json`, prompts for any optional config (deployment URL, debug log path), stores secrets in the OS keychain, and registers all ten tools + the proactive-trust-check prompt.
 
-### Install (hand-edit JSON — recommended)
+### Building the bundle
 
-Hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS; adjust path on other OSes) and merge the `trustgraph` entry into `mcpServers`:
+```bash
+# Prereq: npm i -g @anthropic-ai/mcpb
+cd mcp-server && bash build-mcpb.sh
+# → ../dist/trustgraph.mcpb
+```
+
+The build script bundles `skill/scripts/mint-key.sh` into the package so the MCP is self-contained (no separate skill checkout required at runtime).
+
+### Installing
+
+Drag `dist/trustgraph.mcpb` onto Claude Desktop, or open it from Finder / Explorer. Desktop's UI prompts for the optional config; defaults are fine for a first install. Restart Desktop after install completes (it should prompt). Verify the MCP loaded by checking the `🔌` indicator in the compose window — `trustgraph` should appear with all ten tools listed, plus the `/trustgraph-proactive` prompt in the slash-command picker.
+
+For a deeper health check, run `bash skill/scripts/tg-doctor` from the cloned repo (works for any install path).
+
+### Getting proactive auto-firing
+
+The MCP tools alone are advisory — the model uses them when relevant but doesn't auto-fire on every fetch the way the Code skill does. Two ways to enable the auto-fire behavior in Desktop:
+
+1. **Per-conversation**: type `/` in compose, pick **trustgraph-proactive**. The protocol becomes part of the conversation context.
+2. **Always-on**: paste the block from `docs/desktop-personalize.md` into **Settings → Profile → preferences**. Every conversation gets the rule.
+
+### Fallback: hand-edit JSON
+
+If you can't build `.mcpb` (no Node, no `npm`), hand-edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS path; adjust on other OSes) and merge:
 
 ```jsonc
 {
   "mcpServers": {
     "trustgraph": {
       "command": "uv",
-      "args": [
-        "--directory", "/absolute/path/to/trustgraph-skill/mcp-server",
-        "run", "--locked",
-        "python", "server.py"
-      ],
+      "args": ["--directory", "/absolute/path/to/trustgraph-skill/mcp-server", "run", "--locked", "python", "server.py"],
       "env": {
-        // Required: path to the shared mint-key.sh script.
         "TRUSTGRAPH_MINT_SCRIPT": "/absolute/path/to/trustgraph-skill/skill/scripts/mint-key.sh",
-
-        // Recommended: silence third-party deprecation noise on stdout.
         "PYTHONWARNINGS": "ignore"
-
-        // Optional: override the TrustGraph deployment URL.
-        // See the DNS-takeover warning below — strongly recommended for any
-        // non-throwaway use.
-        // "TRUSTGRAPH_BASE_URL": "https://your-trustgraph-deployment.example",
-
-        // Optional: append-only JSONL side log of every request/response,
-        // mode 0o600. One line per call: ts, method, path, params, body
-        // keys, status, error, duration_ms. Mirror in tg-flush per chunk
-        // POST. Use when debugging "why isn't this working".
-        // "TRUSTGRAPH_DEBUG_LOG": "/Users/you/.trustgraph/mcp-debug.log",
-
-        // Not set here: TRUSTGRAPH_API_KEY (auto-minted on first `rate` call
-        // via TRUSTGRAPH_MINT_SCRIPT; provide it only for stable identity).
+        // Optional: "TRUSTGRAPH_BASE_URL", "TRUSTGRAPH_DEBUG_LOG" — see env table below
       }
     }
   }
 }
 ```
 
-Replace both absolute paths with your clone location. Restart Claude Desktop after editing. Verify by opening the Desktop server-log panel — the `trustgraph` MCP should appear with all ten tools listed. For a deeper health check (key file, queue, rater backend, API reachability), run `bash skill/scripts/tg-doctor`.
+Replace both absolute paths with your clone location. If `uv` doesn't resolve in Desktop's launchd-spawned environment (spawn error in the server log), replace `"command": "uv"` with the absolute path — find via `which uv`, e.g. `/Users/you/.local/bin/uv`.
 
-If `uv` doesn't resolve in Desktop's launchd-spawned environment (you'll see a spawn error in the server log), replace `"command": "uv"` with the absolute path — find it with `which uv` and substitute, e.g. `/Users/you/.local/bin/uv`.
+---
+
+## Install path 3 — claude.ai web skill
+
+The paired skill at `dist/trustgraph-skill.zip` (rebuilt from `skill/SKILL.md` + `skill/references/`) loads on claude.ai via the skill router. Upload at **Settings → Capabilities → Skills**. No local install. Best when you primarily use claude.ai in the browser.
 
 The MCP shares `~/.trustgraph/api-key` with the Code skill via the refactored `mint-key.sh`, which owns read-or-mint-and-persist under `fcntl.flock`. First surface to mint owns the reviewer identity baked into the key; both surfaces accumulate ratings under that identity.
 
