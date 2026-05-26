@@ -14,11 +14,13 @@ All three coexist. The Code skill and Desktop MCP coordinate on a single key fil
 
 ---
 
-## Before you install: reviewer identity
+## Optional: stable reviewer identity (skip if you're just trying it out)
 
-`mint-key.sh` (called automatically on first write) defaults to an **anonymous** identity (`agent://anon/<uuid>`). Fine for trying things out, but the resulting key is unrecoverable if you wipe `~/.trustgraph/` — your accumulated ratings stay in TrustGraph but become orphaned (attributed to a reviewer-uuid you can no longer reproduce).
+By default, `mint-key.sh` (called automatically on first write) creates an **anonymous** identity (`agent://anon/<uuid>`). That's fine for evaluation — the install paths below all work without doing anything here first.
 
-**If you want longitudinal signal across reinstalls or fresh machines**, mint once with an explicit identity and back the key up:
+**Read this section only if** you want your ratings to survive wiping `~/.trustgraph/` (anonymous keys are unrecoverable — your ratings stay in TrustGraph but get orphaned to a uuid you can't reproduce).
+
+If you want longitudinal signal across reinstalls or fresh machines, pre-mint once with an explicit identity and back the key up:
 
 ```bash
 # Pre-mint with a stable identity (any URI-shaped string — your name, an
@@ -48,16 +50,40 @@ The installer prompts for a rater backend:
 | `api` | Anthropic API key from `console.anthropic.com` | ~$0.001 / ~2s | Heavy use; you have an API key |
 | `claude-cli` | Reuses Claude Code's existing claude.ai login | ~$0.02–0.07 (subscription-billed) / ~20s | Light use; no extra setup |
 
-Then **start a fresh Claude Code session** (or run `/hooks` in the current one) — hooks load at session start. Every WebFetch / WebSearch / MCP tool / `curl`-like Bash call now gets rated silently in the background; queued events flush to TrustGraph when the session ends.
+Then **start a fresh Claude Code session** — hooks load at session start, so the session you ran the installer from will not see them. (`/hooks` opens a TUI picker, it does not reload settings; a fresh session is the actual reload.)
+
+Every WebFetch / WebSearch / MCP tool / `curl`-like Bash call now gets rated silently in the background; queued events flush to TrustGraph when the session ends.
 
 **Verify:**
 ```bash
 bash ~/.claude/skills/trustgraph/scripts/tg-doctor
 ```
 
+Expected on a fresh install (before your first rating fires):
+```
+tg-doctor — trustgraph install diagnostic
+──────────────────────────────────────────
+  ⚠ key file         …/keys/<host>.key (none yet — will mint on first rate call)
+  ✓ queue            empty (~/.trustgraph/queue.jsonl)
+  ⚠ last flush       no sentinel (nothing has flushed yet, or pre-Phase-5 install)
+  ✓ rater backend    claude-cli ('claude' on PATH)
+  ✓ mint-key.sh      …/scripts/mint-key.sh (python3 + curl OK)
+  ✓ TrustGraph API   https://…/livez → 200 (NN ms)
+
+✓ all checks passed
+```
+
+The two ⚠ lines are expected for a clean install — the key file is **lazy-minted** (only appears after your first rated tool call), and `last flush` warns until the first session ends. Both clear to ✓ on their own after one rated session.
+
+**Non-interactive install** (for scripts / CI / AI agents): set `TG_RATER_BACKEND=api|claude-cli` in env to skip the backend prompt. For the `api` backend, set `ANTHROPIC_API_KEY` in env to skip the secret prompt. Example:
+
+```bash
+TG_RATER_BACKEND=claude-cli bash ~/code/trustgraph-skill/skill/install.sh
+```
+
 **Update later:** `bash ~/code/trustgraph-skill/skill/update-skill.sh` (git pulls + re-runs the installer).
 
-**Install Code + Desktop together:** add `--desktop` to the install command above.
+**Install Code + Desktop together:** add `--desktop` to the install command above — installs the Code skill **and** registers the MCP server in Claude Desktop's config in one command (uses the JSON-fallback path from Path 2 below, not `.mcpb`).
 
 ---
 
@@ -68,11 +94,14 @@ Anthropic's `.mcpb` format ships the MCP server as a single double-clickable fil
 ### Build the bundle
 
 ```bash
-cd mcp-server && bash build-mcpb.sh
+git clone https://github.com/GusEllerm/trustgraph-skill.git ~/code/trustgraph-skill
+cd ~/code/trustgraph-skill/mcp-server && bash build-mcpb.sh
 # → ../dist/trustgraph.mcpb (≈ 68 KB)
 ```
 
-Requires Node ≥ 18. The script uses `npx` so no global install is needed.
+Requires Node ≥ 18 (`node -v` to check; install from [nodejs.org](https://nodejs.org) or `brew install node`). The script uses `npx` so no global package install is needed.
+
+> **Also a Claude Code user?** Skip this build entirely — run `bash skill/install.sh --desktop` from Path 1 to install both Code and Desktop in one shot (uses the JSON-fallback path, not `.mcpb`).
 
 ### Install
 
@@ -81,16 +110,20 @@ open dist/trustgraph.mcpb        # macOS
 # or drag the file onto Claude Desktop in Finder / Explorer.
 ```
 
-Desktop's installer UI opens, lists the ten tools the bundle ships, and prompts for optional config (deployment URL, debug log path). Accept defaults for a first install. Restart Desktop when prompted.
+Desktop's installer UI opens, lists the ten tools the bundle ships, and prompts for optional config (deployment URL, debug log path). Accept defaults for a first install.
 
-**Verify:** open **Settings → Connectors** — `trustgraph` should show as active with all ten tools listed. For a deeper check, run `bash skill/scripts/tg-doctor` from the cloned repo.
+**Restart Desktop after installing** — **Cmd+Q** (macOS) or quit from the system tray (Windows/Linux), then reopen. Just closing the window leaves Desktop running with the old config in memory; the MCP won't appear.
+
+**Verify:** open **Settings → Connectors** — `trustgraph` should show with all ten tools listed (`score`, `profile`, `rate`, `retrieve`, `rank`, `discover`, `capabilities`, `score_batch`, `score_history`, `get_rubric`). For a deeper check, run `bash ~/code/trustgraph-skill/skill/scripts/tg-doctor` from the cloned repo.
+
+If `trustgraph` doesn't appear in Connectors, check `~/Library/Logs/Claude/mcp.log` (macOS) for `[trustgraph] Server started and connected successfully` — a successful spawn means it's loaded, the UI is just rendering it somewhere else (some Desktop versions group MCPs under "Connectors → Custom").
 
 ### Get auto-firing behaviour
 
 By default the model calls TrustGraph tools when it judges them relevant — it does not auto-fire on every URL fetch the way Code's hooks do. Two ways to enable always-fire:
 
-- **Always-on:** paste the block from [`docs/desktop-personalize.md`](docs/desktop-personalize.md) into **Settings → Profile → Personalize**. Every conversation gets the rule.
-- **Per-conversation:** click the **`+`** button in compose, pick **"Add from trustgraph"**, attach **`trustgraph-proactive`**. The protocol applies to that conversation only.
+- **Always-on:** paste the block from [`docs/desktop-personalize.md`](docs/desktop-personalize.md) into **Settings → Profile** (the Personalize / "preferences" panel inside Profile). Every conversation gets the rule.
+- **Per-conversation:** click the **`+`** button in compose (left of the message input), pick **"Add from trustgraph"**, attach **`trustgraph-proactive`**. The protocol applies to that conversation only. (Note: MCP prompts surface under `+`, not `/` — slash-commands are reserved for built-ins.)
 
 ### Fallback: hand-edit JSON
 
@@ -119,13 +152,19 @@ Find your `uv` path with `which uv` — Desktop's launchd environment doesn't in
 
 Upload `dist/trustgraph-skill.zip` at **claude.ai → Settings → Capabilities → Skills**. No local install. The skill router triggers on the description's keywords and gives Claude the documented `curl` patterns to call TrustGraph.
 
-If the zip is stale or you've edited `SKILL.md`, rebuild:
+**Where to get the zip:** download the prebuilt `trustgraph-skill.zip` from this repo's [GitHub Releases](https://github.com/GusEllerm/trustgraph-skill/releases) page. (No release yet? Clone the repo and build it: `git clone https://github.com/GusEllerm/trustgraph-skill.git && cd trustgraph-skill/skill && zip -r ../dist/trustgraph-skill.zip SKILL.md references/*.md`.)
 
-```bash
-cd skill && zip -r ../dist/trustgraph-skill.zip SKILL.md references/*.md
-```
+**Verify the skill loaded:** start a fresh claude.ai conversation and ask:
 
-claude.ai enforces `description ≤ 1024 chars` on the SKILL.md frontmatter — the current description is ~870 chars, leaving 154 chars of headroom for tweaks.
+> "What skills do you have access to? Do you have one for TrustGraph?"
+
+Claude should list `trustgraph` among its available skills. Then try a real call:
+
+> "Use trustgraph to check the trust score of `https://example.com`."
+
+Claude should walk through the curl pattern from `references/queries.md` and report the composite/confidence.
+
+claude.ai enforces `description ≤ 1024 chars` on the SKILL.md frontmatter — the current description is ~870 chars, leaving 154 chars of headroom if you fork and tweak.
 
 ---
 
@@ -149,11 +188,12 @@ For Desktop `.mcpb` installs, set these via the installer UI's config form. For 
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Hooks don't fire in Code | Session started before install | Quit and reopen Claude Code, or `/hooks` in the running session. |
-| MCP not visible in Desktop | Desktop cached old config | Fully **Cmd+Q** Desktop (not just close window), reopen. Check **Settings → Connectors**. |
-| MCP tools appear, but the `trustgraph-proactive` prompt doesn't show under `/` | MCP prompts surface under `+` in Desktop, not `/` | Click `+` in compose → "Add from trustgraph" → `trustgraph-proactive`. |
-| Ratings not accumulating | Hook fired but rater failed | Set `TRUSTGRAPH_DEBUG_LOG=/tmp/tg.log` and inspect, or `tail ~/.trustgraph/hook.log`. |
-| `~/.trustgraph/keys/` empty after install | Lazy-mint: the key only appears on first write | Trigger one rating (or run `bash ~/.claude/skills/trustgraph/scripts/mint-key.sh`). |
+| Hooks don't fire in Code | Session started before install (or you only edited settings.json mid-session) | **Quit and reopen Claude Code.** `/hooks` is a TUI picker, not a reload — a fresh session is the actual reload mechanism. |
+| MCP not visible in Desktop's Connectors | Desktop is still running with the old config in memory | Fully **Cmd+Q** Desktop (macOS) or quit from system tray (Windows/Linux), then reopen. Closing the window alone doesn't reload the config. |
+| MCP tools appear, but `trustgraph-proactive` doesn't show under `/` | MCP prompts surface under `+` in Desktop, not `/` (the `/` menu is reserved for built-in commands) | Click `+` in compose → "Add from trustgraph" → `trustgraph-proactive`. |
+| Ratings not accumulating | Hook fired but rater failed (Anthropic API down, no API key, etc.) | Set `TRUSTGRAPH_DEBUG_LOG=/tmp/tg.log` and inspect for non-200s, or `tail ~/.trustgraph/hook.log` for `rater exited 0` lines. |
+| `~/.trustgraph/keys/` empty after install | **Expected** — the key is lazy-minted on first write | Trigger one rating (any WebFetch in Code, any `rate` call in Desktop) or force a mint: `bash ~/.claude/skills/trustgraph/scripts/mint-key.sh`. |
+| `install.sh` hangs on backend prompt in CI / non-TTY | The installer reads from stdin without `TG_RATER_BACKEND` set | Run with `TG_RATER_BACKEND=claude-cli bash install.sh` (or `=api`). See Path 1's "Non-interactive install" note. |
 
 ---
 
