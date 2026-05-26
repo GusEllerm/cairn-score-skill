@@ -270,6 +270,35 @@ class DiscoverResult(BaseModel):
     results: list[DiscoverHit]
 
 
+class EntityRef(BaseModel):
+    """Single entity reference for score_batch."""
+    type: Literal["data_source", "capability"]
+    external_id: Annotated[str, Field(min_length=1)]
+
+
+class ScoreBatchItemOut(BaseModel):
+    """One reading in a /v1/score/batch response. Same fields as
+    ScoreSummary but with the entity ref echoed alongside so callers
+    can correlate without preserving input order."""
+    model_config = ConfigDict(extra="allow")
+    type: str
+    external_id: str
+    composite_score: float
+    confidence: float
+    diagnostics: dict[str, Any] = {}
+    last_updated: str | None = None
+
+
+class HistoryBucket(BaseModel):
+    """One time-bucket of aggregated score statistics from /v1/score/history.
+    stddev_score is None when count == 1 (one observation has no spread)."""
+    model_config = ConfigDict(extra="allow")
+    bucket_start: str
+    count: int
+    mean_score: float
+    stddev_score: float | None = None
+
+
 # ---- Rubric models + constant (Phase 2) ----
 
 class Anchor(BaseModel):
@@ -707,6 +736,78 @@ async def discover(
     body = {"query": query, "k": k, "inner_pool": inner_pool}
     data = await _request(ctx, "POST", "/v1/discover", json=body)
     return DiscoverResult.model_validate(data)
+
+
+@mcp.tool()
+async def score_batch(
+    refs: Annotated[list[EntityRef], Field(min_length=1, max_length=100)],
+    ctx: Context[ServerSession, AppContext] | None = None,
+) -> list[ScoreBatchItemOut]:
+    """Look up trust scores for up to 100 entities in one round trip.
+
+    Use when evaluating several sources or tools before acting — e.g.
+    "I have 8 URLs to summarise, which are trustworthy?" or "I have
+    access to N MCP tools, which have a track record?".
+
+    Returns one item per input ref, each with composite_score,
+    confidence, diagnostics, and last_updated. Unknown entities come
+    back with `composite_score: 0.5, confidence: 0.0, last_updated:
+    null` — the uninformed prior, not "neutral".
+
+    Skip for single lookups (use `score`).
+
+    Example: user pastes a list of URLs to summarise — call
+    `score_batch(refs=[{"type": "data_source", "external_id": url}
+    for url in urls])` and use confidence to gate whether to fetch.
+    """
+    if ctx is None:  # pragma: no cover
+        raise RuntimeError("ctx must be injected by FastMCP")
+    body = {"refs": [r.model_dump() for r in refs]}
+    data = await _request(ctx, "POST", "/v1/score/batch", json=body)
+    return [ScoreBatchItemOut.model_validate(item) for item in data]
+
+
+@mcp.tool()
+async def score_history(
+    type: Literal["data_source", "capability"],
+    external_id: Annotated[str, Field(min_length=1)],
+    window: str = "7d",
+    bucket: str = "1d",
+    context: str | None = None,
+    ctx: Context[ServerSession, AppContext] | None = None,
+) -> list[HistoryBucket]:
+    """Fetch time-bucketed score statistics for one entity — the "is X getting worse?" lens.
+
+    Use when (a) a previously trusted source has started misbehaving;
+    (b) the user asks whether something has gotten better or worse;
+    (c) you want to spot a trend before deciding to keep using a
+    source. Pair with `retrieve(since=...)` to inspect the events
+    behind a drop.
+
+    `window` and `bucket` accept `s`/`m`/`h`/`d` suffixes; `bucket`
+    must be ≤ `window`. Server defaults are `24h`/`1h`; our default
+    here is `7d`/`1d` (better for trend analysis at agent timescales).
+
+    Skip for one-shot trust checks (use `score`). Buckets with
+    `count == 1` have `stddev_score: null` (one observation has no
+    spread — not an error).
+
+    Example: user asks "has https://api.foo.com gotten worse?" —
+    call `score_history(type="data_source", external_id="...",
+    window="30d", bucket="1d")`.
+    """
+    if ctx is None:  # pragma: no cover
+        raise RuntimeError("ctx must be injected by FastMCP")
+    params: dict = {
+        "type": type,
+        "external_id": external_id,
+        "window": window,
+        "bucket": bucket,
+    }
+    if context is not None:
+        params["context"] = context
+    data = await _request(ctx, "GET", "/v1/score/history", params=params)
+    return [HistoryBucket.model_validate(item) for item in data]
 
 
 # ---- Phase 4 helpers: tag normalization + metric value sanitization ----

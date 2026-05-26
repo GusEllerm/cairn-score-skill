@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Fetch time-bucketed score statistics for one entity. One header + one line per bucket.
+#
+# Usage: scripts/tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]
+# Example: scripts/tg-history data_source https://api.foo.com 7d 1d
+#       → # entity=data_source/https://api.foo.com window=7d bucket=1d n_buckets=5
+#       → 2026-05-19 n=136 mean=0.840 stddev=0.060
+#       → 2026-05-20 n=  4 mean=0.825 stddev=0.042
+#       → ...
+#
+# Defaults: window=7d, bucket=1d (better for trend analysis than the server's
+# 24h/1h defaults). `bucket` must be ≤ `window`. Buckets with count==1 have
+# stddev=null (one observation has no spread). Reads use no API key.
+
+set -euo pipefail
+command -v python3 >/dev/null || { echo "tg-history: python3 required" >&2; exit 127; }
+
+: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+
+TYPE="${1:?usage: tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]}"
+EXTERNAL_ID="${2:?usage: tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]}"
+WINDOW="${3:-7d}"
+BUCKET="${4:-1d}"
+
+# Use python urllib to encode params correctly (URLs may have special chars).
+QS=$(python3 -c '
+import sys, urllib.parse
+params = {"type": sys.argv[1], "external_id": sys.argv[2], "window": sys.argv[3], "bucket": sys.argv[4]}
+print(urllib.parse.urlencode(params))
+' "$TYPE" "$EXTERNAL_ID" "$WINDOW" "$BUCKET")
+
+RESP=$(curl -sS "${TRUSTGRAPH_BASE_URL}/v1/score/history?${QS}")
+
+TYPE="$TYPE" EXTERNAL_ID="$EXTERNAL_ID" WINDOW="$WINDOW" BUCKET="$BUCKET" python3 -c '
+import sys, os, json
+data = json.loads(sys.stdin.read())
+if isinstance(data, dict) and "error" in data:
+    sys.exit("tg-history: " + json.dumps(data["error"]))
+if not isinstance(data, list):
+    sys.exit(f"tg-history: expected JSON array, got {type(data).__name__}")
+
+t, ext, w, b = os.environ["TYPE"], os.environ["EXTERNAL_ID"], os.environ["WINDOW"], os.environ["BUCKET"]
+print(f"# entity={t}/{ext} window={w} bucket={b} n_buckets={len(data)}")
+for bk in data:
+    start = bk.get("bucket_start", "?")
+    if isinstance(start, str) and len(start) >= 10:
+        start = start[:10]
+    n = bk.get("count", 0)
+    m = bk.get("mean_score")
+    sd = bk.get("stddev_score")
+    m_str = f"{m:.3f}" if isinstance(m, (int, float)) else "?"
+    sd_str = f"{sd:.3f}" if isinstance(sd, (int, float)) else "null"
+    print(f"{start} n={n:>3} mean={m_str} stddev={sd_str}")
+' <<< "$RESP"
