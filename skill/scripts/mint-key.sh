@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve a TrustGraph API key, minting if absent. Holds the per-key-file lock
+# Resolve a Cairn API key, minting if absent. Holds the per-key-file lock
 # across the critical section so concurrent callers see exactly one mint.
 #
 # Usage:
@@ -15,12 +15,12 @@
 #                                               #   known revoked.
 #
 # Env:
-#   TRUSTGRAPH_KEY_FILE   default: $HOME/.trustgraph/keys/<host>.key
-#                         (URL-scoped — derived from TRUSTGRAPH_BASE_URL's host)
-#   TRUSTGRAPH_BASE_URL   default: https://mep39camvm.us-east-1.awsapprunner.com
+#   CAIRN_KEY_FILE   default: $HOME/.cairn/keys/<host>.key
+#                         (URL-scoped — derived from CAIRN_BASE_URL's host)
+#   CAIRN_BASE_URL   default: https://mep39camvm.us-east-1.awsapprunner.com
 #
 # What it does:
-#   1. Take fcntl.flock(LOCK_EX) on ${TRUSTGRAPH_KEY_FILE}.lock (via
+#   1. Take fcntl.flock(LOCK_EX) on ${CAIRN_KEY_FILE}.lock (via
 #      python3 -c since flock(1) isn't on macOS).
 #   2. Double-check: if the key file already exists and is non-empty, print
 #      it (unless --write) and exit. This makes concurrent callers a no-op.
@@ -41,19 +41,19 @@ trap 'exec 9>&-' EXIT
 command -v python3 >/dev/null || { echo "mint-key.sh: python3 required" >&2; exit 127; }
 command -v curl >/dev/null || { echo "mint-key.sh: curl required" >&2; exit 127; }
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
 
 # Key file default is URL-scoped so a key minted against one host is never
 # silently reused against another (DNS-takeover / env-override safety).
-# Explicit TRUSTGRAPH_KEY_FILE override bypasses the scheme entirely.
-if [[ -z "${TRUSTGRAPH_KEY_FILE:-}" ]]; then
-  HOST=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.urlparse(sys.argv[1]).hostname or "default")' "$TRUSTGRAPH_BASE_URL")
-  TRUSTGRAPH_KEY_FILE="$HOME/.trustgraph/keys/${HOST}.key"
+# Explicit CAIRN_KEY_FILE override bypasses the scheme entirely.
+if [[ -z "${CAIRN_KEY_FILE:-}" ]]; then
+  HOST=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.urlparse(sys.argv[1]).hostname or "default")' "$CAIRN_BASE_URL")
+  CAIRN_KEY_FILE="$HOME/.cairn/keys/${HOST}.key"
 fi
-LOCK="${TRUSTGRAPH_KEY_FILE}.lock"
+LOCK="${CAIRN_KEY_FILE}.lock"
 
-mkdir -p "$(dirname "$TRUSTGRAPH_KEY_FILE")"
-chmod 700 "$(dirname "$TRUSTGRAPH_KEY_FILE")"
+mkdir -p "$(dirname "$CAIRN_KEY_FILE")"
+chmod 700 "$(dirname "$CAIRN_KEY_FILE")"
 
 # Arg parsing: --write / --remint may appear in any position; the remaining
 # arg (if any) is the reviewer identity. Last positional wins if multiple.
@@ -79,14 +79,14 @@ python3 -c 'import fcntl,sys; fcntl.flock(sys.stdin.fileno(), fcntl.LOCK_EX)' <&
 # stored key) so the 401-recovery path in server.py actually gets a fresh
 # key — without --remint, a revoked key would just be re-emitted from the
 # file and we'd loop on 401.
-if [[ "$FORCE_REMINT" -ne 1 ]] && [[ -s "$TRUSTGRAPH_KEY_FILE" ]]; then
-  [[ "$WRITE_ONLY" -eq 1 ]] || cat "$TRUSTGRAPH_KEY_FILE"
+if [[ "$FORCE_REMINT" -ne 1 ]] && [[ -s "$CAIRN_KEY_FILE" ]]; then
+  [[ "$WRITE_ONLY" -eq 1 ]] || cat "$CAIRN_KEY_FILE"
   exit 0
 fi
 
 # Mint.
 PAYLOAD=$(python3 -c 'import json,sys; print(json.dumps({"reviewer_external_id": sys.argv[1]}))' "$IDENTITY")
-RESP=$(curl -sS --fail -X POST "$TRUSTGRAPH_BASE_URL/v1/keys" \
+RESP=$(curl -sS --fail -X POST "$CAIRN_BASE_URL/v1/keys" \
   -H "Content-Type: application/json" -d "$PAYLOAD")
 KEY=$(python3 -c '
 import sys, json
@@ -108,9 +108,9 @@ print(key)
 # chmod 600 before write so it's never observed at default umask perms,
 # then mv -f preserves the mode.
 umask 077
-tmp=$(mktemp "${TRUSTGRAPH_KEY_FILE}.XXXXXX")
+tmp=$(mktemp "${CAIRN_KEY_FILE}.XXXXXX")
 chmod 600 "$tmp"
 printf '%s\n' "$KEY" > "$tmp"
-mv -f "$tmp" "$TRUSTGRAPH_KEY_FILE"
+mv -f "$tmp" "$CAIRN_KEY_FILE"
 
 [[ "$WRITE_ONLY" -eq 1 ]] || echo "$KEY"

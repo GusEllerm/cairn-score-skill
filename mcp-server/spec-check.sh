@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # spec-check.sh — guard against silent upstream API drift.
 #
-# Fetches the live TrustGraph OpenAPI spec and diffs it against the snapshot
+# Fetches the live Cairn OpenAPI spec and diffs it against the snapshot
 # at mcp-server/openapi.snapshot.json. Exits 0 on no drift, 1 on changes.
 #
 # Run before pulling upstream changes, after a deploy you didn't make, or as
@@ -19,13 +19,13 @@
 #   bash mcp-server/spec-check.sh --update     # overwrite snapshot with live spec
 #
 # Env:
-#   TRUSTGRAPH_BASE_URL  default: https://mep39camvm.us-east-1.awsapprunner.com
+#   CAIRN_BASE_URL  default: https://mep39camvm.us-east-1.awsapprunner.com
 
 set -euo pipefail
 command -v python3 >/dev/null || { echo "spec-check.sh: python3 required" >&2; exit 127; }
 command -v curl    >/dev/null || { echo "spec-check.sh: curl required"    >&2; exit 127; }
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SNAPSHOT="$SCRIPT_DIR/openapi.snapshot.json"
@@ -38,7 +38,7 @@ fi
 
 LIVE=$(mktemp)
 trap 'rm -f "$LIVE"' EXIT
-curl -sS "$TRUSTGRAPH_BASE_URL/openapi.json" | python3 -m json.tool > "$LIVE"
+curl -sS "$CAIRN_BASE_URL/openapi.json" | python3 -m json.tool > "$LIVE"
 
 if [[ "${1:-}" == "--update" ]]; then
   cp "$LIVE" "$SNAPSHOT"

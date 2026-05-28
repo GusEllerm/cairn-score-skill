@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Queue a TrustGraph rating for batch submission. Silent on success.
+# Queue a Cairn rating for batch submission. Silent on success.
 #
-# Usage: echo '<json>' | scripts/tg-rate
+# Usage: echo '<json>' | scripts/cs-rate
 #   The JSON is a valid POST /v1/scores body:
 #     {"reviewee": {"type": "...", "external_id": "..."}, "score": 0.8, ...}
 #   See references/rubric.md for the full field list.
 #
-# Appends one JSON line to $TRUSTGRAPH_QUEUE (default ~/.trustgraph/queue.jsonl).
+# Appends one JSON line to $CAIRN_QUEUE (default ~/.cairn/queue.jsonl).
 #
 # Normalizations applied (silent — avoids the all-or-nothing 422 trap at flush):
 #   task_tags, failure_modes : coerced to snake_case ^[a-z][a-z0-9_]{0,63}$; bad ones dropped
@@ -14,32 +14,32 @@
 #                              strings like "execution_status":"success" or "latency_unit":"seconds"
 #                              despite the schema requiring finite floats)
 #
-# Use scripts/tg-flush at session end to submit the queue as one batch.
+# Use scripts/cs-flush at session end to submit the queue as one batch.
 #
-# Does not require TRUSTGRAPH_API_KEY (that's only needed at flush time).
+# Does not require CAIRN_API_KEY (that's only needed at flush time).
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-rate: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-rate: python3 required" >&2; exit 127; }
 
-: "${TRUSTGRAPH_QUEUE:=$HOME/.trustgraph/queue.jsonl}"
+: "${CAIRN_QUEUE:=$HOME/.cairn/queue.jsonl}"
 
-mkdir -p "$(dirname "$TRUSTGRAPH_QUEUE")"
+mkdir -p "$(dirname "$CAIRN_QUEUE")"
 
 # Read stdin BEFORE the heredoc — heredocs replace stdin.
 INPUT=$(cat)
 
-# Take exclusive lock on the queue file so concurrent tg-rate appends and a
-# tg-flush read/unlink cycle serialize. Without this, an event written
+# Take exclusive lock on the queue file so concurrent cs-rate appends and a
+# cs-flush read/unlink cycle serialize. Without this, an event written
 # between flush's read and its unlink is silently dropped. fd 9 held by this
 # shell; the inline python3 takes flock on the same OFD via <&9; trap closes
 # fd 9 on EXIT (kernel does the same on SIGKILL via fd reap).
-LOCK="${TRUSTGRAPH_QUEUE}.lock"
+LOCK="${CAIRN_QUEUE}.lock"
 exec 9>"$LOCK"
 trap 'exec 9>&-' EXIT
 python3 -c 'import fcntl,sys; fcntl.flock(sys.stdin.fileno(), fcntl.LOCK_EX)' <&9
 
 # Validate, normalize, re-emit compactly.
-INPUT="$INPUT" python3 <<'PY' >> "$TRUSTGRAPH_QUEUE"
+INPUT="$INPUT" python3 <<'PY' >> "$CAIRN_QUEUE"
 import os, sys, json, re, math
 
 TAG_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -88,11 +88,11 @@ def normalize_metric_value(v):
 try:
     obj = json.loads(os.environ["INPUT"])
 except json.JSONDecodeError as e:
-    sys.exit(f"tg-rate: invalid JSON on stdin: {e}")
+    sys.exit(f"cs-rate: invalid JSON on stdin: {e}")
 if not isinstance(obj, dict):
-    sys.exit("tg-rate: stdin must be a JSON object")
+    sys.exit("cs-rate: stdin must be a JSON object")
 if "reviewee" not in obj or "score" not in obj:
-    sys.exit("tg-rate: body must include 'reviewee' and 'score'")
+    sys.exit("cs-rate: body must include 'reviewee' and 'score'")
 
 if "task_tags" in obj:
     cleaned = normalize_tag_list(obj["task_tags"])

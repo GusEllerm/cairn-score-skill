@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Clean slate: wipe all trustgraph state from the local machine.
+# Clean slate: wipe all cairn state from the local machine.
 #
 # Removes:
-#   - ~/.claude/skills/trustgraph/      (Code skill files)
-#   - ~/.trustgraph/                    (API key, queue, hook log, sentinels)
-#   - Hook entries in ~/.claude/settings.json that reference trustgraph
-#   - Env entries TG_* / TRUSTGRAPH_* in ~/.claude/settings.json
-#   - mcpServers.trustgraph in Claude Desktop's config (if present)
+#   - ~/.claude/skills/cairn/      (Code skill files)
+#   - ~/.cairn/                    (API key, queue, hook log, sentinels)
+#   - Hook entries in ~/.claude/settings.json that reference cairn
+#   - Env entries CAIRN_* in ~/.claude/settings.json
+#   - mcpServers.cairn in Claude Desktop's config (if present)
 #
 # Leaves alone:
 #   - The clone at $PWD (this is the source, not install state)
@@ -17,16 +17,16 @@
 # except a trailing `clean` line.
 #
 # Usage:
-#   bash docs/_reset-trustgraph-state.sh
+#   bash docs/_reset-cairn-state.sh
 
 set -euo pipefail
 
-rm -rf ~/.claude/skills/trustgraph ~/.trustgraph
+rm -rf ~/.claude/skills/cairn ~/.cairn
 
 python3 - <<'PY'
 import json, os
 
-# ~/.claude/settings.json — drop trustgraph hooks + TG_/TRUSTGRAPH_ env keys
+# ~/.claude/settings.json — drop cairn hooks + CAIRN_* env keys
 p = os.path.expanduser("~/.claude/settings.json")
 if os.path.exists(p):
     c = json.load(open(p))
@@ -35,8 +35,8 @@ if os.path.exists(p):
             c[k] = {
                 kk: vv
                 for kk, vv in c[k].items()
-                if "trustgraph" not in str(vv).lower()
-                and not (kk.startswith("TG_") or kk.startswith("TRUSTGRAPH_"))
+                if "cairn" not in str(vv).lower()
+                and not kk.startswith("CAIRN_")
             }
             if not c[k]:
                 del c[k]
@@ -45,12 +45,12 @@ if os.path.exists(p):
         f.write("\n")
 
 # ~/Library/Application Support/Claude/claude_desktop_config.json (macOS) —
-# drop the trustgraph MCP entry if present
+# drop the cairn MCP entry if present
 p = os.path.expanduser("~/Library/Application Support/Claude/claude_desktop_config.json")
 if os.path.exists(p):
     c = json.load(open(p))
-    if "mcpServers" in c and "trustgraph" in c["mcpServers"]:
-        del c["mcpServers"]["trustgraph"]
+    if "mcpServers" in c and "cairn" in c["mcpServers"]:
+        del c["mcpServers"]["cairn"]
         if not c["mcpServers"]:
             del c["mcpServers"]
         with open(p, "w") as f:

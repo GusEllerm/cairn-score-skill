@@ -2,10 +2,10 @@
 # Batch trust-score lookup for up to 100 entities. Refs come in as JSONL on
 # stdin, one `{"type": "...", "external_id": "..."}` per line.
 #
-# Usage: scripts/tg-score-batch < refs.jsonl
+# Usage: scripts/cs-score-batch < refs.jsonl
 #        printf '%s\n' '{"type":"data_source","external_id":"https://a.example.com"}' \
 #                     '{"type":"capability","external_id":"mcp://weather-api"}' \
-#          | scripts/tg-score-batch
+#          | scripts/cs-score-batch
 #       → # n_refs=2 returned=2
 #       → 0.78 0.83 data_source https://a.example.com
 #       → 0.62 0.41 capability  mcp://weather-api
@@ -14,9 +14,9 @@
 # Unknown entities print 0.50 0.00 (the uninformed prior). Reads use no API key.
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-score-batch: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-score-batch: python3 required" >&2; exit 127; }
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
 
 BODY=$(python3 -c '
 import sys, json
@@ -28,18 +28,18 @@ for line in sys.stdin:
     try:
         ref = json.loads(line)
     except json.JSONDecodeError as e:
-        sys.exit(f"tg-score-batch: bad JSONL line: {e}")
+        sys.exit(f"cs-score-batch: bad JSONL line: {e}")
     if not isinstance(ref, dict) or "type" not in ref or "external_id" not in ref:
-        sys.exit(f"tg-score-batch: each line must be a JSON object with type+external_id, got {ref!r}")
+        sys.exit(f"cs-score-batch: each line must be a JSON object with type+external_id, got {ref!r}")
     refs.append({"type": ref["type"], "external_id": ref["external_id"]})
 if not refs:
-    sys.exit("tg-score-batch: no refs on stdin")
+    sys.exit("cs-score-batch: no refs on stdin")
 if len(refs) > 100:
-    sys.exit(f"tg-score-batch: max 100 refs per call, got {len(refs)}")
+    sys.exit(f"cs-score-batch: max 100 refs per call, got {len(refs)}")
 print(json.dumps({"refs": refs}))
 ')
 
-RESP=$(curl -sS -X POST "$TRUSTGRAPH_BASE_URL/v1/score/batch" \
+RESP=$(curl -sS -X POST "$CAIRN_BASE_URL/v1/score/batch" \
   -H "Content-Type: application/json" \
   -d "$BODY")
 
@@ -47,9 +47,9 @@ python3 -c '
 import sys, json
 data = json.loads(sys.stdin.read())
 if isinstance(data, dict) and "error" in data:
-    sys.exit("tg-score-batch: " + json.dumps(data["error"]))
+    sys.exit("cs-score-batch: " + json.dumps(data["error"]))
 if not isinstance(data, list):
-    sys.exit(f"tg-score-batch: expected JSON array, got {type(data).__name__}")
+    sys.exit(f"cs-score-batch: expected JSON array, got {type(data).__name__}")
 
 n_refs = len(json.loads(sys.argv[1])["refs"])
 print(f"# n_refs={n_refs} returned={len(data)}")

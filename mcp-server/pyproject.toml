@@ -1,7 +1,7 @@
 [project]
-name = "trustgraph-mcp"
+name = "cairn-mcp"
 version = "0.1.0"
-description = "TrustGraph MCP server — exposes trust/reputation tools to MCP hosts."
+description = "Cairn MCP server — exposes trust/reputation tools to MCP hosts."
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.12,<2",

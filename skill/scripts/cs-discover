@@ -2,8 +2,8 @@
 # Free-text task description → ranked entities, grounded in actual reviewer
 # rationales. One header line + one line per hit.
 #
-# Usage: scripts/tg-discover QUERY [K] [INNER_POOL]
-# Example: scripts/tg-discover "send a message to a slack channel" 5
+# Usage: scripts/cs-discover QUERY [K] [INNER_POOL]
+# Example: scripts/cs-discover "send a message to a slack channel" 5
 #       → # query="send a message to a slack channel" n_results=3
 #       → 0.81 capability mcp://slack comp=0.78 c=0.41 n=12 - Sent test message; clean response.
 #       → 0.76 capability mcp://discord-bot comp=0.65 c=0.25 n=4 schema_drift Posted to channel webhook; minor formatting drift.
@@ -14,15 +14,15 @@
 #
 # Returns non-zero with the server's error envelope on 503
 # (embeddings-disabled mode — no fallback). When that happens, use
-# tg-score / tg-retrieve on known entities, or pair tg-rank with a
+# cs-score / cs-retrieve on known entities, or pair cs-rank with a
 # tag from /v1/capabilities instead.
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-discover: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-discover: python3 required" >&2; exit 127; }
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
 
-QUERY="${1:?usage: tg-discover QUERY [K] [INNER_POOL]}"
+QUERY="${1:?usage: cs-discover QUERY [K] [INNER_POOL]}"
 K="${2:-10}"
 INNER_POOL="${3:-50}"
 
@@ -32,7 +32,7 @@ q, k, inner = sys.argv[1:4]
 print(json.dumps({"query": q, "k": int(k), "inner_pool": int(inner)}))
 ' "$QUERY" "$K" "$INNER_POOL")
 
-RESP=$(curl -sS -X POST "$TRUSTGRAPH_BASE_URL/v1/discover" \
+RESP=$(curl -sS -X POST "$CAIRN_BASE_URL/v1/discover" \
   -H "Content-Type: application/json" \
   -d "$BODY")
 
@@ -40,7 +40,7 @@ python3 -c '
 import sys, json
 data = json.loads(sys.stdin.read())
 if isinstance(data, dict) and "error" in data:
-    sys.exit("tg-discover: " + json.dumps(data["error"]))
+    sys.exit("cs-discover: " + json.dumps(data["error"]))
 
 q = data.get("query", "")
 n = data.get("n_results", 0)

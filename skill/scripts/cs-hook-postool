@@ -2,7 +2,7 @@
 # PostToolUse / PostToolUseFailure hook.
 # Reads Claude Code hook-input JSON on stdin, extracts the external resource
 # involved (URL / MCP server / etc.), constructs a briefing, and feeds it to
-# scripts/tg-judge-and-rate. The rater queues a /v1/scores body via tg-rate;
+# scripts/cs-judge-and-rate. The rater queues a /v1/scores body via cs-rate;
 # the queue is flushed by the Stop hook (also wired in settings.json).
 #
 # Tools handled:
@@ -15,17 +15,17 @@
 # Anything else is silently skipped.
 #
 # Designed for `async: true` invocation in settings.json so the agent never
-# waits on this. Errors land in $HOME/.trustgraph/hook.log; the agent's
+# waits on this. Errors land in $HOME/.cairn/hook.log; the agent's
 # conversation is never touched.
 
 set -euo pipefail
 
 # Recursion guard: if a rater-spawned Claude Code session somehow triggers our
 # hooks (shouldn't happen with --tools "", but belt-and-suspenders), bail out.
-[[ "${TRUSTGRAPH_NESTED:-}" == "1" ]] && exit 0
+[[ "${CAIRN_NESTED:-}" == "1" ]] && exit 0
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_DIR="$HOME/.trustgraph"
+LOG_DIR="$HOME/.cairn"
 LOG="$LOG_DIR/hook.log"
 mkdir -p "$LOG_DIR"
 
@@ -126,8 +126,8 @@ fi
 # whole time. `( ) & disown` lets the hook return immediately while the rater
 # continues in the background; output still lands in hook.log for diagnosis.
 (
-  echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] tg-hook-postool: dispatching briefing (async)"
-  echo "$BRIEFING" | "$SKILL_DIR/scripts/tg-judge-and-rate" 2>&1
-  echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] tg-hook-postool: rater exited $?"
+  echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] cs-hook-postool: dispatching briefing (async)"
+  echo "$BRIEFING" | "$SKILL_DIR/scripts/cs-judge-and-rate" 2>&1
+  echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] cs-hook-postool: rater exited $?"
 ) >> "$LOG" 2>&1 &
 disown

@@ -1,11 +1,11 @@
 ---
-name: trustgraph
-description: Check or submit trust and reputation scores for data sources and capabilities (URLs, REST APIs, MCP servers, tools) via the TrustGraph API, and discover the right tool for a task by free-text query. Use BEFORE consuming a non-trivial web source or invoking an MCP/tool you haven't established trust in, AND AFTER any such interaction to record a rating. Triggers: about to fetch a URL, call an MCP tool, scrape a page, or hit an external API; just finished any of those; the user asks to check or rate a source, asks "which tool for X" / "what's cheapest/fastest", or mentions TrustGraph. Skip routine file reads, well-known docs sites already accepted, and low-stakes one-shot replies. Even when the user doesn't say "check the score," default to using this skill for any source whose trustworthiness is non-obvious — accumulated ratings are what lets the system learn.
+name: cairn
+description: Check or submit trust and reputation scores for data sources and capabilities (URLs, REST APIs, MCP servers, tools) via the Cairn API, and discover the right tool for a task by free-text query. Use BEFORE consuming a non-trivial web source or invoking an MCP/tool you haven't established trust in, AND AFTER any such interaction to record a rating. Triggers: about to fetch a URL, call an MCP tool, scrape a page, or hit an external API; just finished any of those; the user asks to check or rate a source, asks "which tool for X" / "what's cheapest/fastest", or mentions Cairn. Skip routine file reads, well-known docs sites already accepted, and low-stakes one-shot replies. Even when the user doesn't say "check the score," default to using this skill for any source whose trustworthiness is non-obvious — accumulated ratings are what lets the system learn.
 ---
 
-# TrustGraph: check and submit trust scores
+# Cairn: check and submit trust scores
 
-This skill talks to the TrustGraph API. TrustGraph stores reputation scores for the data sources and capabilities (MCP servers, tools) an agent interacts with. There are two jobs:
+This skill talks to the Cairn API. Cairn stores reputation scores for the data sources and capabilities (MCP servers, tools) an agent interacts with. There are two jobs:
 
 1. **Before** consuming a source or invoking a capability you haven't used much before, check its score.
 2. **After** consuming or invoking, submit a rating reflecting how it went.
@@ -18,20 +18,20 @@ This file covers the procedural skeleton. Detailed reference material lives alon
 - `references/examples.md` — four worked `/v1/scores` submissions across source types
 - `references/queries.md` — Workflow 3 endpoints (`/profile`, `/retrieve`, `/rank`, `/capabilities`) and the routing table
 - `references/scoring-model.md` — decay and confidence accrual
-- `scripts/tg-score` — pre-check; prints one line `<composite> <confidence> <last_updated>`
-- `scripts/tg-score-batch` — batch pre-check; refs JSONL on stdin, one line per ref
-- `scripts/tg-rate` — appends a `/v1/scores` body (read from stdin) to a local queue; silent on success
-- `scripts/tg-flush` — submits the queued events as one batch via `/v1/scores/batch`; run at session end
-- `scripts/tg-retrieve` — compact retrieve; one header line + one line per event
-- `scripts/tg-discover` — free-text task → ranked entities; one line per hit
-- `scripts/tg-history` — time-bucketed score trend; one line per bucket
-- `scripts/tg-doctor` — **run first when anything trustgraph-related fails** (mint, flush, score lookup). One-shot install/runtime health check; ✓/✗ per check
-- `scripts/mint-key.sh` — mints a TrustGraph API key (ephemeral by default, stable identity on request)
+- `scripts/cs-score` — pre-check; prints one line `<composite> <confidence> <last_updated>`
+- `scripts/cs-score-batch` — batch pre-check; refs JSONL on stdin, one line per ref
+- `scripts/cs-rate` — appends a `/v1/scores` body (read from stdin) to a local queue; silent on success
+- `scripts/cs-flush` — submits the queued events as one batch via `/v1/scores/batch`; run at session end
+- `scripts/cs-retrieve` — compact retrieve; one header line + one line per event
+- `scripts/cs-discover` — free-text task → ranked entities; one line per hit
+- `scripts/cs-history` — time-bucketed score trend; one line per bucket
+- `scripts/cs-doctor` — **run first when anything cairn-related fails** (mint, flush, score lookup). One-shot install/runtime health check; ✓/✗ per check
+- `scripts/mint-key.sh` — mints a Cairn API key (ephemeral by default, stable identity on request)
 
 **Pick the right surface for what's connected:**
 
-- **MCP server connected** (Claude Desktop, claude.ai with the trustgraph MCP, or any MCP-capable host): prefer the MCP tools (`score`, `profile`, `rate`, `retrieve`, `rank`, `discover`, `capabilities`, `score_batch`, `score_history`, `get_rubric`). They return structured Python objects and never need shell access.
-- **Shell only** (Claude Code): use the `scripts/tg-*` wrappers above. They compress the per-call IO so the main thread never sees raw JSON.
+- **MCP server connected** (Claude Desktop, claude.ai with the cairn MCP, or any MCP-capable host): prefer the MCP tools (`score`, `profile`, `rate`, `retrieve`, `rank`, `discover`, `capabilities`, `score_batch`, `score_history`, `get_rubric`). They return structured Python objects and never need shell access.
+- **Shell only** (Claude Code): use the `scripts/cs-*` wrappers above. They compress the per-call IO so the main thread never sees raw JSON.
 - **Neither available**: fall back to raw `curl` against the endpoints documented in `references/`.
 
 The MCP tools and bash wrappers are functionally equivalent (same endpoints, same response shapes). Pick by what's available, not by preference.
@@ -40,28 +40,28 @@ The MCP tools and bash wrappers are functionally equivalent (same endpoints, sam
 
 Read these from environment:
 
-- `TRUSTGRAPH_BASE_URL` — base URL of the API. Defaults to `https://mep39camvm.us-east-1.awsapprunner.com` (the hosted PoC); set to `http://localhost:8000` for local dev against `make dev`.
-- `TRUSTGRAPH_API_KEY` — a previously-minted plaintext key. If unset, mint one for this session (see below).
+- `CAIRN_BASE_URL` — base URL of the API. Defaults to `https://mep39camvm.us-east-1.awsapprunner.com` (the hosted PoC); set to `http://localhost:8000` for local dev against `make dev`.
+- `CAIRN_API_KEY` — a previously-minted plaintext key. If unset, mint one for this session (see below).
 
-If a request returns "connection refused" or similar, TrustGraph isn't reachable — tell the user rather than silently skipping. Don't fall back to scoring "from memory" later; ratings are most useful when they reflect direct, immediate evidence.
+If a request returns "connection refused" or similar, Cairn isn't reachable — tell the user rather than silently skipping. Don't fall back to scoring "from memory" later; ratings are most useful when they reflect direct, immediate evidence.
 
 ### Getting a key
 
-If `TRUSTGRAPH_API_KEY` is unset, mint an ephemeral one for this session:
+If `CAIRN_API_KEY` is unset, mint an ephemeral one for this session:
 
 ```bash
-TRUSTGRAPH_API_KEY=$(scripts/mint-key.sh)
+CAIRN_API_KEY=$(scripts/mint-key.sh)
 ```
 
 For longitudinal signal across sessions, mint once with a stable reviewer identity, then persist the key (shell profile, `.env`, secret store — whatever fits) and reuse it:
 
 ```bash
-TRUSTGRAPH_API_KEY=$(scripts/mint-key.sh agent://your-org/your-agent)
+CAIRN_API_KEY=$(scripts/mint-key.sh agent://your-org/your-agent)
 ```
 
 ## Entity types and external_id conventions
 
-TrustGraph entities have two identifying fields you supply: `type` and `external_id`. Pick consistently — the same conceptual thing must always get the same `(type, external_id)` pair, otherwise ratings split across duplicate entities and nothing accumulates.
+Cairn entities have two identifying fields you supply: `type` and `external_id`. Pick consistently — the same conceptual thing must always get the same `(type, external_id)` pair, otherwise ratings split across duplicate entities and nothing accumulates.
 
 | Thing being rated | `type` | `external_id` |
 |---|---|---|
@@ -78,7 +78,7 @@ The schema only recognises `data_source`, `capability`, and `agent`. Don't inven
 When you're about to fetch a non-trivial URL or call an MCP tool whose trust isn't already established this session, check its score. Reads are unauthenticated:
 
 ```bash
-scripts/tg-score data_source https://example.com/article
+scripts/cs-score data_source https://example.com/article
 # → 0.78 0.83 2026-05-12T14:00:00Z
 #   (composite_score confidence last_updated)
 ```
@@ -90,8 +90,8 @@ For the raw response shape (with `diagnostics` block, etc.), see `references/que
 **Decide what to do.** These thresholds are starting heuristics, not rules:
 
 - composite ≥ 0.7 and confidence ≥ 0.3 → proceed normally.
-- composite between 0.4 and 0.7, or confidence < 0.3 → the number isn't decisive. Run `scripts/tg-retrieve <type> <external_id>` and read the actual rationales before deciding how cautiously to proceed.
-- composite < 0.4 with non-trivial confidence → mention the low score to the user before proceeding, and run `scripts/tg-retrieve <type> <external_id>` to surface *why*. (For `failure_modes_any` filtering on the worst events, fall back to the raw `POST /v1/retrieve` shape in `references/queries.md`.) Don't refuse outright — the score is a prior, not a verdict — but the user deserves to know what past reviewers actually saw, not just the number.
+- composite between 0.4 and 0.7, or confidence < 0.3 → the number isn't decisive. Run `scripts/cs-retrieve <type> <external_id>` and read the actual rationales before deciding how cautiously to proceed.
+- composite < 0.4 with non-trivial confidence → mention the low score to the user before proceeding, and run `scripts/cs-retrieve <type> <external_id>` to surface *why*. (For `failure_modes_any` filtering on the worst events, fall back to the raw `POST /v1/retrieve` shape in `references/queries.md`.) Don't refuse outright — the score is a prior, not a verdict — but the user deserves to know what past reviewers actually saw, not just the number.
 - confidence == 0.0 (never rated) → no signal yet; proceed and submit a rating afterwards so the next session has something to go on.
 
 Skip the lookup for obviously trivial cases: well-known docs sites the user has already accepted (e.g. docs.python.org, en.wikipedia.org for general knowledge), cached pages already discussed in this conversation, or anything plainly low-stakes. The lookup costs a roundtrip; spend it where it matters.
@@ -104,7 +104,7 @@ When you're evaluating multiple sources before acting, use the batch wrapper:
 printf '%s\n' \
   '{"type":"data_source","external_id":"https://example.com/page1"}' \
   '{"type":"capability","external_id":"mcp://weather-api"}' \
-  | scripts/tg-score-batch
+  | scripts/cs-score-batch
 # → # n_refs=2 returned=2
 #   0.78 0.83 data_source https://example.com/page1
 #   0.62 0.41 capability  mcp://weather-api
@@ -117,7 +117,7 @@ Up to 100 refs per call. Note: this is `/v1/score/batch` (singular) — the plur
 If a previously trusted source starts misbehaving — or the user asks whether something has gotten worse — fetch its history:
 
 ```bash
-scripts/tg-history data_source https://example.com 30d 1d
+scripts/cs-history data_source https://example.com 30d 1d
 # → # entity=data_source/https://example.com window=30d bucket=1d n_buckets=12
 #   2026-04-26 n= 14 mean=0.78 stddev=0.08
 #   2026-04-27 n=  9 mean=0.62 stddev=0.15
@@ -128,7 +128,7 @@ Returns time-bucketed event statistics (`count`, `mean_score`, `stddev_score` pe
 
 ## Workflow 2 — After consuming a source or invoking a capability
 
-This is the main job. After any non-trivial interaction, construct a `/v1/scores` body and pipe it to `tg-rate`:
+This is the main job. After any non-trivial interaction, construct a `/v1/scores` body and pipe it to `cs-rate`:
 
 ```bash
 echo '{
@@ -139,10 +139,10 @@ echo '{
   "rationale": "Content matched expectation; no injection attempts; minor formatting issues.",
   "dimensions": {"accuracy": 0.9, "reliability": 0.85},
   "task_tags": ["web_search"]
-}' | scripts/tg-rate
+}' | scripts/cs-rate
 ```
 
-`tg-rate` is silent on success — it validates the JSON, then appends one line to `~/.trustgraph/queue.jsonl`. **Nothing is submitted yet.** Call `scripts/tg-flush` at session end (or whenever the queue is large) to send the batch (see below).
+`cs-rate` is silent on success — it validates the JSON, then appends one line to `~/.cairn/queue.jsonl`. **Nothing is submitted yet.** Call `scripts/cs-flush` at session end (or whenever the queue is large) to send the batch (see below).
 
 The body shape:
 
@@ -156,15 +156,15 @@ For copy-pasteable bodies covering well-known docs, suspicious sources, MCP tool
 
 ### Flushing the queue
 
-`scripts/tg-rate` is queue-only; ratings only land when `tg-flush` runs:
+`scripts/cs-rate` is queue-only; ratings only land when `cs-flush` runs:
 
 ```bash
-scripts/tg-flush
+scripts/cs-flush
 # Silent on success — queue file is removed.
 # Errors go to stderr and the queue is preserved so a retry is possible.
 ```
 
-`tg-flush` submits via `/v1/scores/batch`, chunking to honour the 100-events-per-batch API cap. It requires `TRUSTGRAPH_API_KEY` (mint via `scripts/mint-key.sh` if missing). The reviewer is implicit (from the API key) and shared across all events. **All-or-nothing per chunk:** if any event in a chunk fails validation, that chunk's 100 events are not written — fix the offender, re-run.
+`cs-flush` submits via `/v1/scores/batch`, chunking to honour the 100-events-per-batch API cap. It requires `CAIRN_API_KEY` (mint via `scripts/mint-key.sh` if missing). The reviewer is implicit (from the API key) and shared across all events. **All-or-nothing per chunk:** if any event in a chunk fails validation, that chunk's 100 events are not written — fix the offender, re-run.
 
 **Always flush before the session ends, otherwise queued events are lost.** For immediate submission (e.g. the canary, see below), bypass the queue and `POST /v1/scores` directly — see `references/examples.md`. Rate-as-you-go is the default; immediate is the exception.
 
@@ -172,12 +172,12 @@ scripts/tg-flush
 
 Six unauthenticated endpoints beyond `GET /v1/score` answer questions the scalar doesn't. Reach for them in this order based on what you know:
 
-- `GET /v1/capabilities` — **don't know the tag space yet.** What kinds of tools does TrustGraph track?
-- `POST /v1/discover` — **know the task, not the tag.** "Which tool should I use for X?" Free-text query → ranked entities, grounded in reviewer rationales. Wrapper: `scripts/tg-discover "QUERY" [K]`.
+- `GET /v1/capabilities` — **don't know the tag space yet.** What kinds of tools does Cairn track?
+- `POST /v1/discover` — **know the task, not the tag.** "Which tool should I use for X?" Free-text query → ranked entities, grounded in reviewer rationales. Wrapper: `scripts/cs-discover "QUERY" [K]`.
 - `POST /v1/rank` — **know the tag, want the strongest entity within it.** Best `web_search` provider by `cost`.
 - `POST /v1/retrieve` — **know the entity, want evidence.** Rationales and failure modes for one specific entity.
 - `GET /v1/profile` — combined snapshot of one entity (composite + dimensions + top failure modes + top capability tags + event counts + LLM-generated summary, see below). Use for "tell me about X" questions.
-- `GET /v1/score/history` — **trend over time.** "Has X gotten worse?" Returns time-bucketed event statistics (count, mean_score, stddev_score per bucket). Wrapper: `scripts/tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]`. Pair with `/v1/retrieve` filtered by `since=...` to see the events behind a trend.
+- `GET /v1/score/history` — **trend over time.** "Has X gotten worse?" Returns time-bucketed event statistics (count, mean_score, stddev_score per bucket). Wrapper: `scripts/cs-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]`. Pair with `/v1/retrieve` filtered by `since=...` to see the events behind a trend.
 
 ### Profile summaries (`/v1/profile.summary`)
 
@@ -185,10 +185,10 @@ Once an entity has ≥ 3 events, the server attaches an LLM-generated **`summary
 
 **See `references/queries.md` for request shapes, response fields, filter options, and the routing table for which endpoint to call when a user asks a specific kind of question.**
 
-The hot path is `scripts/tg-retrieve`, called automatically from Workflow 1's 0.4–0.7 ambiguous-score branch:
+The hot path is `scripts/cs-retrieve`, called automatically from Workflow 1's 0.4–0.7 ambiguous-score branch:
 
 ```bash
-scripts/tg-retrieve data_source https://api.foo.com/v1 "accuracy reliability problems failures" 5
+scripts/cs-retrieve data_source https://api.foo.com/v1 "accuracy reliability problems failures" 5
 # → # composite=0.62 confidence=0.41 n_events=12
 #   0.30 timeout p95 latency over 3s; per-call cost ~$0.012
 #   0.80 - Returned correct data; all fields present.
@@ -217,4 +217,4 @@ If the user wants to sanity-check the loop end-to-end, submit a rating for the c
   - `422` — payload malformed (score out of [0,1], oversize payload, reserved or bad-shape `reviewer_external_id`). Don't retry — the request is wrong.
   - `429` — rate-limited (per-key on writes, per-IP on mint). Honour `Retry-After`.
 - Don't back-rate a whole session's sources from memory at the end. Submit as you go — the rating won't reflect direct evidence otherwise.
-- `scripts/tg-rate` is queue-only; events only land when `scripts/tg-flush` runs. **Flush before the session ends or queued ratings are lost.** The queue lives at `$TRUSTGRAPH_QUEUE` (default `~/.trustgraph/queue.jsonl`) so it survives across processes if needed.
+- `scripts/cs-rate` is queue-only; events only land when `scripts/cs-flush` runs. **Flush before the session ends or queued ratings are lost.** The queue lives at `$CAIRN_QUEUE` (default `~/.cairn/queue.jsonl`) so it survives across processes if needed.

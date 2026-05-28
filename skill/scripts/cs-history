@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fetch time-bucketed score statistics for one entity. One header + one line per bucket.
 #
-# Usage: scripts/tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]
-# Example: scripts/tg-history data_source https://api.foo.com 7d 1d
+# Usage: scripts/cs-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]
+# Example: scripts/cs-history data_source https://api.foo.com 7d 1d
 #       → # entity=data_source/https://api.foo.com window=7d bucket=1d n_buckets=5
 #       → 2026-05-19 n=136 mean=0.840 stddev=0.060
 #       → 2026-05-20 n=  4 mean=0.825 stddev=0.042
@@ -13,12 +13,12 @@
 # stddev=null (one observation has no spread). Reads use no API key.
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-history: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-history: python3 required" >&2; exit 127; }
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
 
-TYPE="${1:?usage: tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]}"
-EXTERNAL_ID="${2:?usage: tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]}"
+TYPE="${1:?usage: cs-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]}"
+EXTERNAL_ID="${2:?usage: cs-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]}"
 WINDOW="${3:-7d}"
 BUCKET="${4:-1d}"
 
@@ -29,15 +29,15 @@ params = {"type": sys.argv[1], "external_id": sys.argv[2], "window": sys.argv[3]
 print(urllib.parse.urlencode(params))
 ' "$TYPE" "$EXTERNAL_ID" "$WINDOW" "$BUCKET")
 
-RESP=$(curl -sS "${TRUSTGRAPH_BASE_URL}/v1/score/history?${QS}")
+RESP=$(curl -sS "${CAIRN_BASE_URL}/v1/score/history?${QS}")
 
 TYPE="$TYPE" EXTERNAL_ID="$EXTERNAL_ID" WINDOW="$WINDOW" BUCKET="$BUCKET" python3 -c '
 import sys, os, json
 data = json.loads(sys.stdin.read())
 if isinstance(data, dict) and "error" in data:
-    sys.exit("tg-history: " + json.dumps(data["error"]))
+    sys.exit("cs-history: " + json.dumps(data["error"]))
 if not isinstance(data, list):
-    sys.exit(f"tg-history: expected JSON array, got {type(data).__name__}")
+    sys.exit(f"cs-history: expected JSON array, got {type(data).__name__}")
 
 t, ext, w, b = os.environ["TYPE"], os.environ["EXTERNAL_ID"], os.environ["WINDOW"], os.environ["BUCKET"]
 print(f"# entity={t}/{ext} window={w} bucket={b} n_buckets={len(data)}")

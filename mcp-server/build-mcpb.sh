@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build the trustgraph MCP as a .mcpb bundle for one-click Desktop install.
+# Build the cairn MCP as a .mcpb bundle for one-click Desktop install.
 #
 # Usage:
 #   cd mcp-server && bash build-mcpb.sh
 #
-# Output: ../dist/trustgraph.mcpb (gitignored — built per release).
+# Output: ../dist/cairn.mcpb (gitignored — built per release).
 #
 # Prereqs:
 #   - npm + npx on PATH (Node ≥ 18). Either `mcpb` already installed
@@ -16,13 +16,13 @@
 #   1. Sanity-checks the bundled mint-key.sh source (since the MCP shells out
 #      to it for the read-or-mint-and-persist critical section).
 #   2. Copies skill/scripts/mint-key.sh into mcp-server/bundled/ so the
-#      manifest's TRUSTGRAPH_MINT_SCRIPT can point at the bundle-local
+#      manifest's CAIRN_MINT_SCRIPT can point at the bundle-local
 #      path (${__dirname}/bundled/mint-key.sh) — no external dep at runtime.
 #   3. Runs `mcpb pack .` which zips per .mcpbignore and writes the artifact.
 #
-# Distribution: ship dist/trustgraph.mcpb via GitHub Releases (or the
-# trustgraph project's own download page). Users double-click in Claude
-# Desktop → auto-install → the trustgraph MCP appears with all 10 tools and
+# Distribution: ship dist/cairn.mcpb via GitHub Releases (or the
+# cairn project's own download page). Users double-click in Claude
+# Desktop → auto-install → the cairn MCP appears with all 10 tools and
 # the proactive prompt registered.
 
 set -euo pipefail
@@ -59,7 +59,7 @@ echo "  ✓ bundled mint-key.sh (from $MINT_SRC)"
 
 # 3. Pack
 OUT_DIR="../dist"
-OUT_FILE="$OUT_DIR/trustgraph.mcpb"
+OUT_FILE="$OUT_DIR/cairn.mcpb"
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_FILE"
 "${MCPB[@]}" pack . "$OUT_FILE"

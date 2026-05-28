@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Install the trustgraph skill into ~/.claude/skills/trustgraph/ and register
+# Install the cairn skill into ~/.claude/skills/cairn/ and register
 # Claude Code hooks (PostToolUse, PostToolUseFailure, Stop) in
 # ~/.claude/settings.json.
 #
-# Two rater backends, picked at install (or per-session via TG_RATER_BACKEND):
+# Two rater backends, picked at install (or per-session via CAIRN_RATER_BACKEND):
 #   "api"        — direct POST to api.anthropic.com (needs ANTHROPIC_API_KEY).
 #                  Cheap (~$0.0003/rating cached), fast (~2s). Best for heavy use.
 #   "claude-cli" — shell out to `claude -p`. Uses Claude Code's own auth (works
@@ -21,11 +21,11 @@
 #                                         #   uv path + clone-local paths;
 #                                         #   for one-click install instead,
 #                                         #   build the .mcpb — see README)
-#   TG_RATER_BACKEND=api bash install.sh  # skip backend prompt
+#   CAIRN_RATER_BACKEND=api bash install.sh  # skip backend prompt
 #
 # Honors:
 #   ANTHROPIC_API_KEY    — used if set in env; otherwise install may prompt for it
-#   TG_RATER_BACKEND     — "api" | "claude-cli" (if unset, install asks)
+#   CAIRN_RATER_BACKEND     — "api" | "claude-cli" (if unset, install asks)
 #   SETTINGS             — override settings.json path (for testing)
 #   DESKTOP_CONFIG       — override Claude Desktop config path (for testing)
 
@@ -54,11 +54,11 @@ while [[ $# -gt 0 ]]; do
 done
 set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 
-DEST="${1:-$HOME/.claude/skills/trustgraph}"
+DEST="${1:-$HOME/.claude/skills/cairn}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS="${SETTINGS:-$HOME/.claude/settings.json}"
 
-echo "trustgraph installer"
+echo "cairn installer"
 echo "  source:   $SRC"
 echo "  dest:     $DEST"
 echo "  settings: $SETTINGS"
@@ -87,9 +87,9 @@ chmod +x "$DEST/scripts/"* "$DEST/install.sh" "$DEST/uninstall.sh" "$DEST/update
 echo "  scripts marked executable"
 echo
 
-# Resolve TG_RATER_BACKEND: env → existing key file inference → interactive prompt.
-KEY_FILE="${TG_ANTHROPIC_KEY_FILE:-$HOME/.trustgraph/anthropic-key}"
-BACKEND="${TG_RATER_BACKEND:-}"
+# Resolve CAIRN_RATER_BACKEND: env → existing key file inference → interactive prompt.
+KEY_FILE="${CAIRN_ANTHROPIC_KEY_FILE:-$HOME/.cairn/anthropic-key}"
+BACKEND="${CAIRN_RATER_BACKEND:-}"
 
 if [[ -z "$BACKEND" ]]; then
   echo "Pick a rater backend:"
@@ -174,18 +174,18 @@ if os.path.exists(settings_path):
         data = json.load(f)
 
 # Persist the backend choice via settings.json env (this is safe to put in env
-# — only the trustgraph scripts read TG_RATER_BACKEND). The Anthropic key
+# — only the cairn scripts read CAIRN_RATER_BACKEND). The Anthropic key
 # itself does NOT live here (would cause Claude Code auth conflict).
 env = data.setdefault("env", {})
-if env.get("TG_RATER_BACKEND") != backend:
-    env["TG_RATER_BACKEND"] = backend
-    print(f"  TG_RATER_BACKEND={backend} → settings.json env")
+if env.get("CAIRN_RATER_BACKEND") != backend:
+    env["CAIRN_RATER_BACKEND"] = backend
+    print(f"  CAIRN_RATER_BACKEND={backend} → settings.json env")
 else:
-    print(f"  TG_RATER_BACKEND already {backend} in settings.json env")
+    print(f"  CAIRN_RATER_BACKEND already {backend} in settings.json env")
 
 hooks = data.setdefault("hooks", {})
-hook_cmd = os.path.join(dest, "scripts", "tg-hook-postool")
-flush_cmd = os.path.join(dest, "scripts", "tg-flush")
+hook_cmd = os.path.join(dest, "scripts", "cs-hook-postool")
+flush_cmd = os.path.join(dest, "scripts", "cs-flush")
 
 def already_has(entries, cmd):
     return any(
@@ -234,7 +234,7 @@ echo
 echo "Installed (Claude Code skill)."
 
 # Optional Desktop MCP registration (--desktop flag).
-# Writes the trustgraph entry into Claude Desktop's mcpServers config, using
+# Writes the cairn entry into Claude Desktop's mcpServers config, using
 # the absolute uv path (Desktop's launchd env lacks ~/.local/bin) and the
 # installed mint-key.sh location (stable, lives at DEST). Doesn't install the
 # Code skill twice — that already ran above.
@@ -283,7 +283,7 @@ path = os.environ["DESKTOP_CONFIG"]
 with open(path) as f:
     cfg = json.load(f)
 mint_script = os.path.join(os.environ["DEST"], "scripts", "mint-key.sh")
-cfg.setdefault("mcpServers", {})["trustgraph"] = {
+cfg.setdefault("mcpServers", {})["cairn"] = {
     "command": os.environ["UV_PATH"],
     "args": [
         "--directory", os.environ["MCP_DIR"],
@@ -291,14 +291,14 @@ cfg.setdefault("mcpServers", {})["trustgraph"] = {
         "python", "server.py",
     ],
     "env": {
-        "TRUSTGRAPH_MINT_SCRIPT": mint_script,
+        "CAIRN_MINT_SCRIPT": mint_script,
         "PYTHONWARNINGS": "ignore",
     },
 }
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
-print(f"  registered → mcpServers.trustgraph")
+print(f"  registered → mcpServers.cairn")
 print(f"    command:     {os.environ['UV_PATH']}")
 print(f"    mcp-server:  {os.environ['MCP_DIR']}")
 print(f"    mint-script: {mint_script}")
@@ -306,21 +306,21 @@ PY
 
   echo
   echo "  ⚠  Restart Claude Desktop (Cmd+Q on macOS, not just close-window) to load the MCP."
-  echo "  Verify in Desktop's compose UI — 'trustgraph' should appear with 10 tools."
+  echo "  Verify in Desktop's compose UI — 'cairn' should appear with 10 tools."
   echo
   echo "  One-click alternative: drop the .mcpb instead of editing JSON:"
-  echo "    cd '$MCP_DIR' && bash build-mcpb.sh   # builds dist/trustgraph.mcpb"
-  echo "    open ../dist/trustgraph.mcpb           # Desktop installs from one file"
+  echo "    cd '$MCP_DIR' && bash build-mcpb.sh   # builds dist/cairn.mcpb"
+  echo "    open ../dist/cairn.mcpb           # Desktop installs from one file"
 fi
 
 echo
 echo "Verify (Code skill):"
-echo "  $DEST/scripts/tg-score data_source https://example.com"
+echo "  $DEST/scripts/cs-score data_source https://example.com"
 echo "  ↳ should print one line like '0.50 0.00 null' (uninformed prior for an untouched entity)"
 echo
 echo "Hooks fire on NEW Claude Code sessions. To enable in the current session, run /hooks"
 echo "in Claude Code (or just start a fresh session). Test by asking Claude to use any MCP"
 echo "tool or fetch a URL — the rating happens silently in the background."
 echo
-echo "Diagnostics: bash $DEST/scripts/tg-doctor"
+echo "Diagnostics: bash $DEST/scripts/cs-doctor"
 echo "Uninstall:   bash $DEST/uninstall.sh"

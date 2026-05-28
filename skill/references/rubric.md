@@ -62,8 +62,8 @@ The fields below are the only **optional** structured fields accepted on `/v1/sc
 Example with dimensions and a rationale:
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
-  -H "X-Api-Key: $TRUSTGRAPH_API_KEY" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/scores" \
+  -H "X-Api-Key: $CAIRN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "reviewee": {"type": "data_source", "external_id": "https://api.foo.com/v1"},

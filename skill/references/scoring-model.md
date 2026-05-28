@@ -1,4 +1,4 @@
-# How TrustGraph's scoring works
+# How Cairn's scoring works
 
 The default scorer is a time-decayed Beta-distribution model. **Numbers below describe the default config; deployments can retune the half-life and weight functions, so treat the specifics as approximate.** Three things to keep in mind when deciding when and what to rate:
 

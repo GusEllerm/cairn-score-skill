@@ -7,8 +7,8 @@ Each example pairs a typical scenario with the corresponding submission body. Th
 User asks for help with a Python library; you fetch `https://docs.scipy.org/doc/scipy/reference/optimize.html` and the page is current and matches the question. Skip the pre-check (it's a well-known docs site) and submit:
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
-  -H "X-Api-Key: $TRUSTGRAPH_API_KEY" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/scores" \
+  -H "X-Api-Key: $CAIRN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "reviewee": {"type": "data_source", "external_id": "https://docs.scipy.org/doc/scipy/reference/optimize.html"},
@@ -24,8 +24,8 @@ curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
 You fetch a blog post that contains text resembling a prompt injection embedded inside a code block:
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
-  -H "X-Api-Key: $TRUSTGRAPH_API_KEY" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/scores" \
+  -H "X-Api-Key: $CAIRN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "reviewee": {"type": "data_source", "external_id": "https://random-blog.example/post/123"},
@@ -42,8 +42,8 @@ curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
 You call a tool from an MCP server `mcp://weather-api` and it returns a clean forecast:
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
-  -H "X-Api-Key: $TRUSTGRAPH_API_KEY" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/scores" \
+  -H "X-Api-Key: $CAIRN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "reviewee": {"type": "capability", "external_id": "mcp://weather-api"},
@@ -60,8 +60,8 @@ curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
 Same kind of capability, but this time you have visibility into the tool's token + context cost. The schema and tool description occupy ~3k tokens of your context window per turn (small); a typical invocation burns ~6k input + ~12k output tokens (heavier than a comparable summarisation tool that runs ~10k total). Score the new axes:
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/scores" \
-  -H "X-Api-Key: $TRUSTGRAPH_API_KEY" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/scores" \
+  -H "X-Api-Key: $CAIRN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "reviewee": {"type": "capability", "external_id": "mcp://research-tool"},

@@ -1,72 +1,72 @@
 #!/usr/bin/env bash
-# Submit all queued TrustGraph ratings as one batch (chunked if > 100).
+# Submit all queued Cairn ratings as one batch (chunked if > 100).
 # Silent on success; removes the queue file. Errors to stderr, exit non-zero;
 # the queue is rewritten to contain ONLY the unsent events so a retry doesn't
 # double-submit chunks that already landed.
 #
 # Defensively normalizes task_tags, failure_modes, and metrics at submit time
-# (tg-rate also normalizes at queue-write — this is belt-and-suspenders for
+# (cs-rate also normalizes at queue-write — this is belt-and-suspenders for
 # entries written before normalization landed).
 #
-# Usage: scripts/tg-flush
+# Usage: scripts/cs-flush
 #
-# Requires TRUSTGRAPH_API_KEY (auto-minted into ~/.trustgraph/keys/<host>.key
+# Requires CAIRN_API_KEY (auto-minted into ~/.cairn/keys/<host>.key
 # on first run via mint-key.sh, which URL-scopes by default).
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-flush: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-flush: python3 required" >&2; exit 127; }
 
 # Recursion guard: if we're inside a rater-spawned Claude Code session, don't
 # flush the parent's queue.
-[[ "${TRUSTGRAPH_NESTED:-}" == "1" ]] && exit 0
+[[ "${CAIRN_NESTED:-}" == "1" ]] && exit 0
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
-: "${TRUSTGRAPH_QUEUE:=$HOME/.trustgraph/queue.jsonl}"
-# Don't default TRUSTGRAPH_KEY_FILE here — mint-key.sh has its own URL-scoped
-# default (~/.trustgraph/keys/<host>.key). Setting a legacy default here
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_QUEUE:=$HOME/.cairn/queue.jsonl}"
+# Don't default CAIRN_KEY_FILE here — mint-key.sh has its own URL-scoped
+# default (~/.cairn/keys/<host>.key). Setting a legacy default here
 # would override mint-key.sh's derivation via the exported env below.
 
-# Resolve TRUSTGRAPH_API_KEY via mint-key.sh, which owns the read-or-mint-and-
-# persist critical section under fcntl.flock on ${TRUSTGRAPH_KEY_FILE}.lock.
-# Honors the same TRUSTGRAPH_KEY_FILE / TRUSTGRAPH_BASE_URL env vars so both
+# Resolve CAIRN_API_KEY via mint-key.sh, which owns the read-or-mint-and-
+# persist critical section under fcntl.flock on ${CAIRN_KEY_FILE}.lock.
+# Honors the same CAIRN_KEY_FILE / CAIRN_BASE_URL env vars so both
 # surfaces coordinate on one file and one lock.
-if [[ -z "${TRUSTGRAPH_API_KEY:-}" ]]; then
+if [[ -z "${CAIRN_API_KEY:-}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  export TRUSTGRAPH_KEY_FILE TRUSTGRAPH_BASE_URL
-  TRUSTGRAPH_API_KEY=$(bash "$SCRIPT_DIR/mint-key.sh") || {
-    echo "tg-flush: mint-key.sh failed; queue NOT submitted" >&2
+  export CAIRN_KEY_FILE CAIRN_BASE_URL
+  CAIRN_API_KEY=$(bash "$SCRIPT_DIR/mint-key.sh") || {
+    echo "cs-flush: mint-key.sh failed; queue NOT submitted" >&2
     exit 1
   }
-  export TRUSTGRAPH_API_KEY
+  export CAIRN_API_KEY
 fi
 
-# Take exclusive lock on the queue file so concurrent tg-rate appends don't
+# Take exclusive lock on the queue file so concurrent cs-rate appends don't
 # race with our read/parse/POST/unlink cycle. Without this, an event written
 # between our read and our unlink is silently lost. Same OFD-dup pattern as
-# tg-rate and mint-key.sh; trap releases on EXIT, kernel on SIGKILL.
-LOCK="${TRUSTGRAPH_QUEUE}.lock"
+# cs-rate and mint-key.sh; trap releases on EXIT, kernel on SIGKILL.
+LOCK="${CAIRN_QUEUE}.lock"
 mkdir -p "$(dirname "$LOCK")"
 exec 9>"$LOCK"
 trap 'exec 9>&-' EXIT
 python3 -c 'import fcntl,sys; fcntl.flock(sys.stdin.fileno(), fcntl.LOCK_EX)' <&9
 
-[[ -s "$TRUSTGRAPH_QUEUE" ]] || exit 0
+[[ -s "$CAIRN_QUEUE" ]] || exit 0
 
-TRUSTGRAPH_BASE_URL="$TRUSTGRAPH_BASE_URL" \
-TRUSTGRAPH_API_KEY="$TRUSTGRAPH_API_KEY" \
-TRUSTGRAPH_QUEUE="$TRUSTGRAPH_QUEUE" \
+CAIRN_BASE_URL="$CAIRN_BASE_URL" \
+CAIRN_API_KEY="$CAIRN_API_KEY" \
+CAIRN_QUEUE="$CAIRN_QUEUE" \
 python3 <<'PY'
 import sys, os, json, re, math, time, urllib.request, urllib.error
 from datetime import datetime, timezone
 
-base = os.environ["TRUSTGRAPH_BASE_URL"]
-key = os.environ["TRUSTGRAPH_API_KEY"]
-queue_path = os.environ["TRUSTGRAPH_QUEUE"]
+base = os.environ["CAIRN_BASE_URL"]
+key = os.environ["CAIRN_API_KEY"]
+queue_path = os.environ["CAIRN_QUEUE"]
 
-# Opt-in JSONL side-log mirroring TRUSTGRAPH_DEBUG_LOG in the MCP server.
+# Opt-in JSONL side-log mirroring CAIRN_DEBUG_LOG in the MCP server.
 # One line per chunk POST. Same explicit os.open(..., 0o600) pattern so the
 # log is never observed at world-readable mode.
-debug_path = os.environ.get("TRUSTGRAPH_DEBUG_LOG")
+debug_path = os.environ.get("CAIRN_DEBUG_LOG")
 debug_fd = None
 if debug_path:
     debug_path = os.path.expanduser(debug_path)
@@ -161,7 +161,7 @@ with open(queue_path) as f:
             events.append(normalize_event(json.loads(line)))
         except json.JSONDecodeError:
             # Stash unparseable lines to queue.dead instead of silently
-            # dropping — a partial tg-rate append (process killed mid-line,
+            # dropping — a partial cs-rate append (process killed mid-line,
             # disk full, etc.) is otherwise invisible.
             dead_lines.append(line)
 
@@ -170,7 +170,7 @@ if dead_lines:
     with open(dead_path, "a") as f:
         for line in dead_lines:
             f.write(line + "\n")
-    sys.stderr.write(f"tg-flush: dropped {len(dead_lines)} corrupted line(s) to {dead_path}\n")
+    sys.stderr.write(f"cs-flush: dropped {len(dead_lines)} corrupted line(s) to {dead_path}\n")
 
 if not events:
     os.unlink(queue_path)
@@ -214,22 +214,22 @@ for i in range(0, N, CHUNK):
                 data = json.loads(body)
                 if isinstance(data, dict) and "error" in data:
                     rewrite_queue(events[i:])
-                    sys.exit(f"tg-flush: chunk {i // CHUNK} failed: {data['error']}")
+                    sys.exit(f"cs-flush: chunk {i // CHUNK} failed: {data['error']}")
     except urllib.error.HTTPError as e:
         dur = round((time.monotonic() - t0) * 1000, 2)
         body_str = e.read().decode(errors='replace')
         _log_chunk(i // CHUNK, len(chunk), e.code, f"HTTPError {e.code}", dur)
         rewrite_queue(events[i:])
-        sys.exit(f"tg-flush: HTTP {e.code} on chunk {i // CHUNK}: {body_str}")
+        sys.exit(f"cs-flush: HTTP {e.code} on chunk {i // CHUNK}: {body_str}")
     except urllib.error.URLError as e:
         dur = round((time.monotonic() - t0) * 1000, 2)
         _log_chunk(i // CHUNK, len(chunk), None, f"URLError: {e.reason}", dur)
         rewrite_queue(events[i:])
-        sys.exit(f"tg-flush: network error on chunk {i // CHUNK}: {e.reason}")
+        sys.exit(f"cs-flush: network error on chunk {i // CHUNK}: {e.reason}")
 
 # All chunks succeeded.
 os.unlink(queue_path)
-# Sentinel for tg-doctor to surface "last successful flush" without
+# Sentinel for cs-doctor to surface "last successful flush" without
 # parsing the debug log.
 sentinel = os.path.join(os.path.dirname(queue_path) or ".", "last-flush")
 try:

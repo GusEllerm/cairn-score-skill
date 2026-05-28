@@ -6,7 +6,7 @@ Beyond the headline `GET /v1/score`, six endpoints answer questions the scalar d
 
 | You have | You want | Endpoint |
 |---|---|---|
-| Nothing | What kinds of tools does TrustGraph track? | `GET /v1/capabilities` |
+| Nothing | What kinds of tools does Cairn track? | `GET /v1/capabilities` |
 | A free-text task ("send a slack message") | A ranked list of entities that fit | `POST /v1/discover` |
 | A capability tag ("web_search") | The strongest entity within that tag, ranked by a dimension | `POST /v1/rank` |
 | An entity reference | The rationales/events behind its score | `POST /v1/retrieve` |
@@ -18,7 +18,7 @@ Beyond the headline `GET /v1/score`, six endpoints answer questions the scalar d
 Composite score + all canonical dimensions + top failure modes + top capability tags + event-count metadata, in one round trip. Always returns 200 — unknown entities come back with `known: false` and dimensions populated from the scorer's prior. Use as the first call when the user asks an open-ended "tell me about X" question:
 
 ```bash
-curl -s "$TRUSTGRAPH_BASE_URL/v1/profile?type=data_source&external_id=https://api.foo.com/v1"
+curl -s "$CAIRN_BASE_URL/v1/profile?type=data_source&external_id=https://api.foo.com/v1"
 ```
 
 Each dimension entry carries `last_updated`. **`null` means there's no measurement at all** — the reading came from the scorer's prior, not a stale row. Use this to distinguish "never rated on this axis" from "rated last week".
@@ -40,7 +40,7 @@ Two example patterns:
 
 ```bash
 # Pattern A — dimension-specific question, narrow with filters.
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/retrieve" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/retrieve" \
   -H "Content-Type: application/json" \
   -d '{
     "entity": {"type": "data_source", "external_id": "https://api.foo.com/v1"},
@@ -53,7 +53,7 @@ curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/retrieve" \
 # Broader natural-language query, recent events only, aggregates included.
 # `since` is an ISO datetime — compute it as e.g. now − 7 days before submitting.
 SINCE=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=7)).isoformat())')
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/retrieve" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/retrieve" \
   -H "Content-Type: application/json" \
   -d "{
     \"entity\": {\"type\": \"data_source\", \"external_id\": \"https://api.foo.com/v1\"},
@@ -77,7 +77,7 @@ The "who's the [adj]" lens. Returns entities that exercise a `capability_tag`, r
 The query field here is singular `capability_tag` (one tag per query), and the value comes from the server-derived capability set — i.e. the union of past submissions' `task_tags` plus whatever the keyword tagger pulled out of their `task` text. So the tag you'd submit on a *write* (`"task_tags": ["web_search"]`) is the same tag you'd query on a *read* (`"capability_tag": "web_search"`); only the field name and plurality differ.
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/rank" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/rank" \
   -H "Content-Type: application/json" \
   -d '{
     "capability_tag": "web_search",
@@ -92,10 +92,10 @@ curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/rank" \
 
 ## `POST /v1/discover` — free-text task → ranked entities
 
-The "which tool fits this task" lens. Embed a natural-language task description server-side and rank all entities by how well their reviewer rationales match. No `capability_tag` needed — use this when you know what you want done but not which tool / category does it. Hot-path wrapper is `scripts/tg-discover "QUERY" [K]`.
+The "which tool fits this task" lens. Embed a natural-language task description server-side and rank all entities by how well their reviewer rationales match. No `capability_tag` needed — use this when you know what you want done but not which tool / category does it. Hot-path wrapper is `scripts/cs-discover "QUERY" [K]`.
 
 ```bash
-curl -s -X POST "$TRUSTGRAPH_BASE_URL/v1/discover" \
+curl -s -X POST "$CAIRN_BASE_URL/v1/discover" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "send a message to a slack channel",
@@ -118,15 +118,15 @@ If `POST /v1/discover` returns 503, the deployment has embeddings disabled — d
 Lists capability tags with `n_events`, `n_entities`, and `last_seen`. Useful before deciding to call `/v1/rank`, and as the cold-start fallback when `/v1/discover` returns nothing useful (e.g. for niche queries):
 
 ```bash
-curl -s "$TRUSTGRAPH_BASE_URL/v1/capabilities?sort=events&limit=20"
+curl -s "$CAIRN_BASE_URL/v1/capabilities?sort=events&limit=20"
 ```
 
 ## `GET /v1/score/history` — time-bucketed trend
 
-Returns aggregated event statistics (`count`, `mean_score`, `stddev_score`) per bucket. Pair with `/v1/retrieve` (using a `since` filter) when you want to see *which events* drove a trend. Hot-path wrapper is `scripts/tg-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]`.
+Returns aggregated event statistics (`count`, `mean_score`, `stddev_score`) per bucket. Pair with `/v1/retrieve` (using a `since` filter) when you want to see *which events* drove a trend. Hot-path wrapper is `scripts/cs-history TYPE EXTERNAL_ID [WINDOW] [BUCKET]`.
 
 ```bash
-curl -s "$TRUSTGRAPH_BASE_URL/v1/score/history?type=data_source&external_id=https://api.foo.com/v1&window=30d&bucket=1d"
+curl -s "$CAIRN_BASE_URL/v1/score/history?type=data_source&external_id=https://api.foo.com/v1&window=30d&bucket=1d"
 ```
 
 `window` and `bucket` accept `s`/`m`/`h`/`d` suffixes; `bucket` must be ≤ `window`. Buckets with `count == 1` have `stddev_score: null`.
@@ -142,7 +142,7 @@ curl -s "$TRUSTGRAPH_BASE_URL/v1/score/history?type=data_source&external_id=http
 | User: "Which tool should I use for X?" (task known, tool not) | `POST /v1/discover` |
 | User: "Who's the [cheapest/fastest/etc] provider of Z?" | `POST /v1/rank` |
 | User: "What capabilities have been rated lately?" | `GET /v1/capabilities` |
-| User: evaluating multiple sources before acting | `POST /v1/score/batch` (`scripts/tg-score-batch`) |
+| User: evaluating multiple sources before acting | `POST /v1/score/batch` (`scripts/cs-score-batch`) |
 | Agent (no prompt): score is ambiguous (0.4–0.7) before consuming | `POST /v1/retrieve` to read rationales and decide how cautiously to proceed |
 | Agent (no prompt): about to rely on a marginal source for a high-stakes task | `POST /v1/retrieve` with `failure_modes_any` filter to surface specific risks |
 | Agent (no prompt): history shows a clear trend (improving or degrading) | `POST /v1/retrieve` with `since` filter to find the events behind the trend |

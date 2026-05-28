@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Retrieve past events for one entity, compactly. One header line + one line per event.
 #
-# Usage: scripts/tg-retrieve TYPE EXTERNAL_ID [QUERY] [K]
-# Example: scripts/tg-retrieve data_source https://api.foo.com/v1 "latency, slow" 5
+# Usage: scripts/cs-retrieve TYPE EXTERNAL_ID [QUERY] [K]
+# Example: scripts/cs-retrieve data_source https://api.foo.com/v1 "latency, slow" 5
 #       → # composite=0.78 confidence=0.83 n_events=12
 #       → 0.30 timeout p95 latency over 3s; per-call cost ~$0.012
 #       → 0.80 - Returned correct data, all fields present
@@ -11,12 +11,12 @@
 # Rationales are truncated to 200 chars. Reads use no API key.
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-retrieve: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-retrieve: python3 required" >&2; exit 127; }
 
-: "${TRUSTGRAPH_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
 
-TYPE="${1:?usage: tg-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
-EXTERNAL_ID="${2:?usage: tg-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
+TYPE="${1:?usage: cs-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
+EXTERNAL_ID="${2:?usage: cs-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
 QUERY="${3:-}"
 K="${4:-5}"
 
@@ -29,7 +29,7 @@ if q:
 print(json.dumps(body))
 ' "$TYPE" "$EXTERNAL_ID" "$QUERY" "$K")
 
-RESP=$(curl -sS -X POST "$TRUSTGRAPH_BASE_URL/v1/retrieve" \
+RESP=$(curl -sS -X POST "$CAIRN_BASE_URL/v1/retrieve" \
   -H "Content-Type: application/json" \
   -d "$BODY")
 
@@ -37,7 +37,7 @@ python3 -c '
 import sys, json
 data = json.loads(sys.stdin.read())
 if isinstance(data, dict) and "error" in data:
-    sys.exit("tg-retrieve: " + json.dumps(data["error"]))
+    sys.exit("cs-retrieve: " + json.dumps(data["error"]))
 
 agg = data.get("aggregates") or {}
 parts = []

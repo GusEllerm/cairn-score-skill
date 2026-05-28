@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Read a tool-call briefing on stdin (JSON), use a Claude model to judge it
-# per the trustgraph skill, and queue the resulting rating via scripts/tg-rate.
+# per the cairn skill, and queue the resulting rating via scripts/cs-rate.
 #
 # Usage:
-#   echo '<briefing-json>' | scripts/tg-judge-and-rate
+#   echo '<briefing-json>' | scripts/cs-judge-and-rate
 #
 # Briefing schema (stdin):
 #   {
@@ -18,7 +18,7 @@
 #     "direct_evidence": true | false
 #   }
 #
-# Backends (TG_RATER_BACKEND; default "auto" picks based on what's available):
+# Backends (CAIRN_RATER_BACKEND; default "auto" picks based on what's available):
 #   "api"        — direct POST to api.anthropic.com (needs ANTHROPIC_API_KEY).
 #                  Cheap (~$0.0003/rating cached), fast (~2s). Best for heavy use.
 #   "claude-cli" — shell out to `claude -p`. Uses whatever auth Claude Code is
@@ -28,52 +28,52 @@
 #   "auto"       — api if ANTHROPIC_API_KEY available, else claude-cli.
 #
 # Environment:
-#   TG_RATER_BACKEND      — "api" | "claude-cli" | "auto" (default "auto")
+#   CAIRN_RATER_BACKEND      — "api" | "claude-cli" | "auto" (default "auto")
 #   ANTHROPIC_API_KEY     — used by the api backend (env first, then key file)
-#   TG_ANTHROPIC_KEY_FILE — default ~/.trustgraph/anthropic-key
-#   TG_RATER_MODEL        — default claude-haiku-4-5-20251001
+#   CAIRN_ANTHROPIC_KEY_FILE — default ~/.cairn/anthropic-key
+#   CAIRN_RATER_MODEL        — default claude-haiku-4-5-20251001
 #   SKILL_DIR             — override skill directory (default: this script's parent)
 #
-# Recursion guard: sets TRUSTGRAPH_NESTED=1 in the child env so the hook scripts
+# Recursion guard: sets CAIRN_NESTED=1 in the child env so the hook scripts
 # bail out if they fire on tool calls the rater itself makes.
 #
-# On success: silent (rating queued via tg-rate). Token-usage line on stderr.
+# On success: silent (rating queued via cs-rate). Token-usage line on stderr.
 # On failure: stderr message, non-zero exit; nothing queued.
 
 set -euo pipefail
-command -v python3 >/dev/null || { echo "tg-judge-and-rate: python3 required" >&2; exit 127; }
+command -v python3 >/dev/null || { echo "cs-judge-and-rate: python3 required" >&2; exit 127; }
 
-: "${TG_RATER_MODEL:=claude-haiku-4-5-20251001}"
-: "${TG_RATER_BACKEND:=auto}"
-: "${TG_ANTHROPIC_KEY_FILE:=$HOME/.trustgraph/anthropic-key}"
+: "${CAIRN_RATER_MODEL:=claude-haiku-4-5-20251001}"
+: "${CAIRN_RATER_BACKEND:=auto}"
+: "${CAIRN_ANTHROPIC_KEY_FILE:=$HOME/.cairn/anthropic-key}"
 
 SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 BRIEFING=$(cat)
-[[ -n "$BRIEFING" ]] || { echo "tg-judge-and-rate: empty briefing on stdin" >&2; exit 2; }
+[[ -n "$BRIEFING" ]] || { echo "cs-judge-and-rate: empty briefing on stdin" >&2; exit 2; }
 
 # Resolve ANTHROPIC_API_KEY (env → key file → empty).
 # `read -r` (vs `$(<file)`) drops the trailing newline that text editors auto-
 # append, otherwise the newline ends up inside the X-Api-Key header → 401.
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ -s "$TG_ANTHROPIC_KEY_FILE" ]]; then
-  IFS= read -r ANTHROPIC_API_KEY < "$TG_ANTHROPIC_KEY_FILE"
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ -s "$CAIRN_ANTHROPIC_KEY_FILE" ]]; then
+  IFS= read -r ANTHROPIC_API_KEY < "$CAIRN_ANTHROPIC_KEY_FILE"
 fi
 
-# Resolve TG_RATER_BACKEND when "auto".
-if [[ "$TG_RATER_BACKEND" == "auto" ]]; then
+# Resolve CAIRN_RATER_BACKEND when "auto".
+if [[ "$CAIRN_RATER_BACKEND" == "auto" ]]; then
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    TG_RATER_BACKEND="api"
+    CAIRN_RATER_BACKEND="api"
   elif command -v claude >/dev/null; then
-    TG_RATER_BACKEND="claude-cli"
+    CAIRN_RATER_BACKEND="claude-cli"
   else
-    echo "tg-judge-and-rate: no ANTHROPIC_API_KEY and no 'claude' on PATH" >&2
+    echo "cs-judge-and-rate: no ANTHROPIC_API_KEY and no 'claude' on PATH" >&2
     exit 1
   fi
 fi
 
 # Build the system prompt (shared between backends).
 PREAMBLE=$(cat <<'EOF'
-You are a trustgraph rater. The user message contains a JSON briefing of one tool-call interaction. Use the skill content below to score it.
+You are a cairn rater. The user message contains a JSON briefing of one tool-call interaction. Use the skill content below to score it.
 
 Anchor numerical dimensions (latency, cost, token_efficiency, context_efficiency) in the rationale with the underlying measurement.
 
@@ -112,20 +112,20 @@ SCHEMA='{
   }
 }'
 
-case "$TG_RATER_BACKEND" in
+case "$CAIRN_RATER_BACKEND" in
   api)
-    [[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "tg-judge-and-rate[api]: no ANTHROPIC_API_KEY available" >&2; exit 1; }
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "cs-judge-and-rate[api]: no ANTHROPIC_API_KEY available" >&2; exit 1; }
 
     BRIEFING="$BRIEFING" SYS_PROMPT="$SYS_PROMPT" SCHEMA="$SCHEMA" \
-    TG_RATER_MODEL="$TG_RATER_MODEL" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-    python3 <<'PY' | "$SKILL_DIR/scripts/tg-rate"
+    CAIRN_RATER_MODEL="$CAIRN_RATER_MODEL" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+    python3 <<'PY' | "$SKILL_DIR/scripts/cs-rate"
 import os, sys, json, urllib.request, urllib.error
 
 briefing = json.loads(os.environ["BRIEFING"])
 system_text = os.environ["SYS_PROMPT"]
 schema = json.loads(os.environ["SCHEMA"])
 api_key = os.environ["ANTHROPIC_API_KEY"]
-model = os.environ["TG_RATER_MODEL"]
+model = os.environ["CAIRN_RATER_MODEL"]
 
 tool_schema = {
     "name": "submit_rating",
@@ -157,9 +157,9 @@ try:
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read())
 except urllib.error.HTTPError as e:
-    sys.exit(f"tg-judge-and-rate[api]: HTTP {e.code}: {e.read().decode(errors='replace')}")
+    sys.exit(f"cs-judge-and-rate[api]: HTTP {e.code}: {e.read().decode(errors='replace')}")
 except urllib.error.URLError as e:
-    sys.exit(f"tg-judge-and-rate[api]: network error: {e.reason}")
+    sys.exit(f"cs-judge-and-rate[api]: network error: {e.reason}")
 
 rating = None
 for block in data.get("content", []) or []:
@@ -168,11 +168,11 @@ for block in data.get("content", []) or []:
         break
 
 if rating is None:
-    sys.exit("tg-judge-and-rate[api]: model did not call submit_rating\n" + json.dumps(data, indent=2))
+    sys.exit("cs-judge-and-rate[api]: model did not call submit_rating\n" + json.dumps(data, indent=2))
 
 usage = data.get("usage") or {}
 print(
-    f"tg-judge-and-rate[api]: in={usage.get('input_tokens', 0)} "
+    f"cs-judge-and-rate[api]: in={usage.get('input_tokens', 0)} "
     f"cache_read={usage.get('cache_read_input_tokens', 0)} "
     f"cache_write={usage.get('cache_creation_input_tokens', 0)} "
     f"out={usage.get('output_tokens', 0)}",
@@ -183,16 +183,16 @@ PY
     ;;
 
   claude-cli)
-    command -v claude >/dev/null || { echo "tg-judge-and-rate[claude-cli]: 'claude' not on PATH" >&2; exit 1; }
+    command -v claude >/dev/null || { echo "cs-judge-and-rate[claude-cli]: 'claude' not on PATH" >&2; exit 1; }
 
-    TG_OUT=$(mktemp)
-    trap 'rm -f "$TG_OUT"' EXIT
+    CAIRN_OUT=$(mktemp)
+    trap 'rm -f "$CAIRN_OUT"' EXIT
 
     # --setting-sources "" / --disable-slash-commands / --tools "" strip Claude Code
     # context bloat (hooks, skills, plugins) so the rater session is minimal.
-    # TRUSTGRAPH_NESTED=1 stops our hooks from firing if any tool call leaks through.
-    TRUSTGRAPH_NESTED=1 claude -p \
-      --model "$TG_RATER_MODEL" \
+    # CAIRN_NESTED=1 stops our hooks from firing if any tool call leaks through.
+    CAIRN_NESTED=1 claude -p \
+      --model "$CAIRN_RATER_MODEL" \
       --setting-sources "" \
       --disable-slash-commands \
       --tools "" \
@@ -201,32 +201,32 @@ PY
       --json-schema "$SCHEMA" \
       --output-format json \
       "$BRIEFING" \
-      < /dev/null > "$TG_OUT" 2>&1 || {
-        echo "tg-judge-and-rate[claude-cli]: claude -p failed:" >&2
-        cat "$TG_OUT" >&2
+      < /dev/null > "$CAIRN_OUT" 2>&1 || {
+        echo "cs-judge-and-rate[claude-cli]: claude -p failed:" >&2
+        cat "$CAIRN_OUT" >&2
         exit 1
       }
 
-    TG_OUT="$TG_OUT" python3 <<'PY' | "$SKILL_DIR/scripts/tg-rate"
+    CAIRN_OUT="$CAIRN_OUT" python3 <<'PY' | "$SKILL_DIR/scripts/cs-rate"
 import os, sys, json
 
-with open(os.environ["TG_OUT"]) as f:
+with open(os.environ["CAIRN_OUT"]) as f:
     raw = f.read()
 
 try:
     wrap = json.loads(raw)
 except json.JSONDecodeError as e:
-    sys.exit(f"tg-judge-and-rate[claude-cli]: could not parse claude -p output: {e}\n{raw[:500]}")
+    sys.exit(f"cs-judge-and-rate[claude-cli]: could not parse claude -p output: {e}\n{raw[:500]}")
 
 rating = wrap.get("structured_output")
 if not rating:
     result_text = (wrap.get("result") or "")[:200]
-    sys.exit(f"tg-judge-and-rate[claude-cli]: no structured_output in response. result={result_text!r}")
+    sys.exit(f"cs-judge-and-rate[claude-cli]: no structured_output in response. result={result_text!r}")
 
 usage = wrap.get("usage") or {}
 cost = wrap.get("total_cost_usd") or 0
 print(
-    f"tg-judge-and-rate[claude-cli]: cost=${cost:.4f} "
+    f"cs-judge-and-rate[claude-cli]: cost=${cost:.4f} "
     f"input={usage.get('input_tokens', 0)} "
     f"cache_read={usage.get('cache_read_input_tokens', 0)} "
     f"cache_write={usage.get('cache_creation_input_tokens', 0)} "
@@ -238,7 +238,7 @@ PY
     ;;
 
   *)
-    echo "tg-judge-and-rate: unknown TG_RATER_BACKEND='$TG_RATER_BACKEND' (want api|claude-cli|auto)" >&2
+    echo "cs-judge-and-rate: unknown CAIRN_RATER_BACKEND='$CAIRN_RATER_BACKEND' (want api|claude-cli|auto)" >&2
     exit 2
     ;;
 esac
