@@ -235,22 +235,10 @@ bash docs/_reset-cairn-state.sh
 
 ---
 
-## A note on naming
-
-The user-facing brand is **Cairn**. The upstream service repo is still named `TrustGraph` internally, and the server reserves the `agent://trustgraph-*` prefix for its own system entities. So if you see `trustgraph` in two places, it's intentional:
-
-- The `agent://trustgraph-` reserved prefix in `mcp-server/server.py` and the reviewer-identity examples — server-enforced; can't be changed client-side.
-- The link to the upstream service repo below — it really is named `ryanchard/TrustGraph`.
-
-Everywhere else in this repo (env vars, wrapper scripts, install paths, docs) uses **Cairn / cairn / CAIRN_**.
-
----
-
 ## Learn more
 
-- **Cairn service** — [github.com/ryanchard/TrustGraph](https://github.com/ryanchard/TrustGraph) *(upstream service repo)*
 - **Model Context Protocol** — [modelcontextprotocol.io](https://modelcontextprotocol.io)
-- **Issues + contributions** — [github.com/GusEllerm/cairn-score-skill](https://github.com/GusEllerm/cairn-score-skill)
+- **Issues + contributions** — [github.com/cairnscore/cairn-score-skill](https://github.com/cairnscore/cairn-score-skill)
 
 ## License
 
