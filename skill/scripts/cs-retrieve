@@ -13,7 +13,7 @@
 set -euo pipefail
 command -v python3 >/dev/null || { echo "cs-retrieve: python3 required" >&2; exit 127; }
 
-: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://api.cairnscore.ai}"
 
 TYPE="${1:?usage: cs-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"
 EXTERNAL_ID="${2:?usage: cs-retrieve TYPE EXTERNAL_ID [QUERY] [K]}"

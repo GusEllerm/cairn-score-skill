@@ -20,7 +20,7 @@ command -v python3 >/dev/null || { echo "cs-flush: python3 required" >&2; exit 1
 # flush the parent's queue.
 [[ "${CAIRN_NESTED:-}" == "1" ]] && exit 0
 
-: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://api.cairnscore.ai}"
 : "${CAIRN_QUEUE:=$HOME/.cairn/queue.jsonl}"
 # Don't default CAIRN_KEY_FILE here — mint-key.sh has its own URL-scoped
 # default (~/.cairn/keys/<host>.key). Setting a legacy default here

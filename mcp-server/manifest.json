@@ -54,7 +54,7 @@
       "title": "Cairn deployment URL",
       "description": "Base URL of the Cairn API. ⚠️ The default is an AWS App Runner subdomain on a shared zone — for any non-experimental use, point this at your own deployment to avoid DNS-takeover risk on the shared host.",
       "required": false,
-      "default": "https://mep39camvm.us-east-1.awsapprunner.com"
+      "default": "https://api.cairnscore.ai"
     },
     "debug_log_path": {
       "type": "string",

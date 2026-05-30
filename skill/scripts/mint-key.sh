@@ -17,7 +17,7 @@
 # Env:
 #   CAIRN_KEY_FILE   default: $HOME/.cairn/keys/<host>.key
 #                         (URL-scoped — derived from CAIRN_BASE_URL's host)
-#   CAIRN_BASE_URL   default: https://mep39camvm.us-east-1.awsapprunner.com
+#   CAIRN_BASE_URL   default: https://api.cairnscore.ai
 #
 # What it does:
 #   1. Take fcntl.flock(LOCK_EX) on ${CAIRN_KEY_FILE}.lock (via
@@ -41,7 +41,7 @@ trap 'exec 9>&-' EXIT
 command -v python3 >/dev/null || { echo "mint-key.sh: python3 required" >&2; exit 127; }
 command -v curl >/dev/null || { echo "mint-key.sh: curl required" >&2; exit 127; }
 
-: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://api.cairnscore.ai}"
 
 # Key file default is URL-scoped so a key minted against one host is never
 # silently reused against another (DNS-takeover / env-override safety).

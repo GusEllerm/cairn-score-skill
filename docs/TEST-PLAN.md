@@ -161,7 +161,7 @@ Everything else (install / verify state / teardown commands) is now known to wor
 
 ### Coexistence check
 
-- [X] Both surfaces share `~/.cairn/keys/mep39camvm.us-east-1.awsapprunner.com.key` — i.e. one reviewer identity for ratings from both
+- [X] Both surfaces share `~/.cairn/keys/api.cairnscore.ai.key` — i.e. one reviewer identity for ratings from both
   ```bash
   # The key file is LAZY-MINTED — it only appears the first time something
   # calls a write endpoint (Code-side: trigger a rate via the smoke above
@@ -169,7 +169,7 @@ Everything else (install / verify state / teardown commands) is now known to wor
   # If you just want to force-test the path without waiting, mint manually:
   bash ~/.claude/skills/cairn/scripts/mint-key.sh > /dev/null
   ls ~/.cairn/keys/
-  # → expect: mep39camvm.us-east-1.awsapprunner.com.key (47 bytes, mode 0600)
+  # → expect: api.cairnscore.ai.key (47 bytes, mode 0600)
   # Calling mint-key.sh a second time returns the cached key — same identity
   # for whichever surface mints next.
   ```
@@ -321,7 +321,7 @@ Everything else (install / verify state / teardown commands) is now known to wor
 - [X] Submit a rating from Code-side first
   - In a Claude Code session, fetch any URL — hooks fire, rate gets queued
   - End session → Stop hook flushes
-  - Note the API key path: `cat ~/.cairn/keys/mep39camvm.us-east-1.awsapprunner.com.key` (47-char `tg_...` value)
+  - Note the API key path: `cat ~/.cairn/keys/api.cairnscore.ai.key` (47-char `tg_...` value)
 - [X] Submit a rating from Desktop-side
   - In a Desktop conversation, ask Claude to rate something via `mcp__cairn__rate`
   - Verify it succeeds (no second mint happens)

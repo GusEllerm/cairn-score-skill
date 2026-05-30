@@ -27,6 +27,7 @@ This file covers the procedural skeleton. Detailed reference material lives alon
 - `scripts/cs-history` — time-bucketed score trend; one line per bucket
 - `scripts/cs-doctor` — **run first when anything cairn-related fails** (mint, flush, score lookup). One-shot install/runtime health check; ✓/✗ per check
 - `scripts/mint-key.sh` — mints a Cairn API key (ephemeral by default, stable identity on request)
+- `scripts/cs-hook-postool` + `scripts/cs-judge-and-rate` — hook-driven auto-rating: a PostToolUse hook briefs a judge that queues a rating via `cs-rate`, flushed by the Stop hook. Internal plumbing wired in `settings.json`; you don't call these by hand.
 
 **Pick the right surface for what's connected:**
 
@@ -40,7 +41,7 @@ The MCP tools and bash wrappers are functionally equivalent (same endpoints, sam
 
 Read these from environment:
 
-- `CAIRN_BASE_URL` — base URL of the API. Defaults to `https://mep39camvm.us-east-1.awsapprunner.com` (the hosted PoC); set to `http://localhost:8000` for local dev against `make dev`.
+- `CAIRN_BASE_URL` — base URL of the API. Defaults to `https://api.cairnscore.ai` (the hosted PoC); set to `http://localhost:8000` for local dev against `make dev`.
 - `CAIRN_API_KEY` — a previously-minted plaintext key. If unset, mint one for this session (see below).
 
 If a request returns "connection refused" or similar, Cairn isn't reachable — tell the user rather than silently skipping. Don't fall back to scoring "from memory" later; ratings are most useful when they reflect direct, immediate evidence.
@@ -209,7 +210,7 @@ If the user wants to sanity-check the loop end-to-end, submit a rating for the c
 - Scores time-decay (3-day half-life by default) and confidence accrues with evidence. See `references/scoring-model.md` for the implications when deciding rating cadence.
 - All ratings sent under one API key share one **reviewer identity**, so the engine can't distinguish individual sessions on its own. If session-level provenance matters, encode it in the `task` text or as a snake_case entry in `task_tags` (e.g. `session_abc123`) — there is no first-class session field.
 - `POST /v1/scores` has **no idempotency key**. If a request times out, check before retrying or you'll double-count.
-- Reserved prefixes (`agent://trustgraph-`, `agent://anthropic/`) cannot be claimed. Use a different prefix.
+- Some upstream-reserved prefixes (e.g. `agent://cairnscore-`, `agent://anthropic/`) are rejected at mint time. Pick a different prefix.
 - Writes are rate-limited per key via a token bucket; the batch endpoint charges one token regardless of size, so default settings allow up to ~50 batches/sec (≈5000 events/sec). `POST /v1/keys` is rate-limited per IP at 50 mints/hour. On 429, honour the `Retry-After` header.
 - Writes use `task_tags` (plural array of strings); `POST /v1/rank` queries the same value space via `capability_tag` (singular string). Different field names, same underlying tag set — see `references/queries.md` for the asymmetry.
 - **Error envelope.** Every error returns `{"error": {"code": "...", "message": "..."}}`. Common codes you'll see:
