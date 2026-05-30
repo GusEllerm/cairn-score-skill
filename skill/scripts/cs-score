@@ -11,7 +11,7 @@
 set -euo pipefail
 command -v python3 >/dev/null || { echo "cs-score: python3 required" >&2; exit 127; }
 
-: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://api.cairnscore.ai}"
 
 TYPE="${1:?usage: cs-score TYPE EXTERNAL_ID}"
 EXTERNAL_ID="${2:?usage: cs-score TYPE EXTERNAL_ID}"

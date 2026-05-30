@@ -42,7 +42,7 @@ logging.basicConfig(stream=sys.stderr, level=logging.WARNING, force=True)
 
 # ---- Constants ----
 
-DEFAULT_BASE_URL = "https://mep39camvm.us-east-1.awsapprunner.com"
+DEFAULT_BASE_URL = "https://api.cairnscore.ai"
 RATIONALE_TRUNCATE = 200  # chars; matches bash cs-retrieve
 
 DimensionName = Literal[

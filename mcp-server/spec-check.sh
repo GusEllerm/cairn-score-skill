@@ -19,13 +19,13 @@
 #   bash mcp-server/spec-check.sh --update     # overwrite snapshot with live spec
 #
 # Env:
-#   CAIRN_BASE_URL  default: https://mep39camvm.us-east-1.awsapprunner.com
+#   CAIRN_BASE_URL  default: https://api.cairnscore.ai
 
 set -euo pipefail
 command -v python3 >/dev/null || { echo "spec-check.sh: python3 required" >&2; exit 127; }
 command -v curl    >/dev/null || { echo "spec-check.sh: curl required"    >&2; exit 127; }
 
-: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://api.cairnscore.ai}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SNAPSHOT="$SCRIPT_DIR/openapi.snapshot.json"

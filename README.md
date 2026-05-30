@@ -1,6 +1,6 @@
 # Cairn for Claude
 
-[**Cairn**](https://github.com/ryanchard/Cairn) gives AI agents a shared memory for trust. Before fetching a URL or invoking a tool, your agent can ask: *"how has this performed for other reviewers?"* After using it, your agent submits a rating. Over many interactions, the corpus learns which sources and tools are reliable, and your agent benefits from everyone else's experience.
+[**Cairn**](https://github.com/cairnscore/cairn-score-skill) gives AI agents a shared memory for trust. Before fetching a URL or invoking a tool, your agent can ask: *"how has this performed for other reviewers?"* After using it, your agent submits a rating. Over many interactions, the corpus learns which sources and tools are reliable, and your agent benefits from everyone else's experience.
 
 This repo wires Cairn into Claude. Pick the install path that matches how you use Claude:
 
@@ -24,7 +24,7 @@ If you want longitudinal signal across reinstalls or fresh machines, pre-mint on
 
 ```bash
 # Pre-mint with a stable identity (any URI-shaped string — your name, an
-# agent handle, etc. — but avoid the reserved `agent://trustgraph-*` and
+# agent handle, etc. — but avoid the reserved `agent://cairnscore-*` and
 # `agent://anthropic/*` prefixes).
 bash skill/scripts/mint-key.sh --write agent://your-org/your-name
 
@@ -39,7 +39,7 @@ All subsequent installs reuse this key, so every rating attributes to your chose
 ## Install path 1 — Claude Code
 
 ```bash
-git clone https://github.com/GusEllerm/cairn-score-skill.git ~/code/cairn-score-skill
+git clone https://github.com/cairnscore/cairn-score-skill.git ~/code/cairn-score-skill
 bash ~/code/cairn-score-skill/skill/install.sh
 ```
 
@@ -94,7 +94,7 @@ Anthropic's `.mcpb` format ships the MCP server as a single double-clickable fil
 ### Build the bundle
 
 ```bash
-git clone https://github.com/GusEllerm/cairn-score-skill.git ~/code/cairn-score-skill
+git clone https://github.com/cairnscore/cairn-score-skill.git ~/code/cairn-score-skill
 cd ~/code/cairn-score-skill/mcp-server && bash build-mcpb.sh
 # → ../dist/cairn.mcpb (≈ 68 KB)
 ```
@@ -152,7 +152,7 @@ Find your `uv` path with `which uv` — Desktop's launchd environment doesn't in
 
 Upload `dist/cairn-skill.zip` at **claude.ai → Settings → Capabilities → Skills**. No local install. The skill router triggers on the description's keywords and gives Claude the documented `curl` patterns to call Cairn.
 
-**Where to get the zip:** download the prebuilt `cairn-skill.zip` from this repo's [GitHub Releases](https://github.com/GusEllerm/cairn-score-skill/releases) page. (No release yet? Clone the repo and build it: `git clone https://github.com/GusEllerm/cairn-score-skill.git && cd cairn-score-skill/skill && zip -r ../dist/cairn-skill.zip SKILL.md references/*.md`.)
+**Where to get the zip:** download the prebuilt `cairn-skill.zip` from this repo's [GitHub Releases](https://github.com/cairnscore/cairn-score-skill/releases) page. (No release yet? Clone the repo and build it: `git clone https://github.com/cairnscore/cairn-score-skill.git && cd cairn-score-skill/skill && zip -r ../dist/cairn-skill.zip SKILL.md references/*.md`.)
 
 **Verify the skill loaded:** start a fresh claude.ai conversation and ask:
 
@@ -174,7 +174,7 @@ The defaults work out of the box. Override when you need to:
 
 | Env var | What it does | Default |
 |---|---|---|
-| `CAIRN_BASE_URL` | Cairn deployment URL. **⚠️ The default is an experimental shared subdomain — for any non-experimental use, point this at your own deployment** to avoid DNS-takeover risk on the shared host. | `https://mep39camvm.us-east-1.awsapprunner.com` |
+| `CAIRN_BASE_URL` | Cairn deployment URL. **⚠️ The default is an experimental shared subdomain — for any non-experimental use, point this at your own deployment** to avoid DNS-takeover risk on the shared host. | `https://api.cairnscore.ai` |
 | `CAIRN_DEBUG_LOG` | When set, every request/response writes to this file as JSONL (mode 0o600). Use for debugging why a call didn't behave. | unset |
 | `CAIRN_RATER_BACKEND` | `api` or `claude-cli` (Code skill only). Pick at install; set in env to override per-session. | (set by install) |
 

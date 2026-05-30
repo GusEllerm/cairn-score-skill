@@ -19,7 +19,7 @@
 set -uo pipefail   # NOT -e: we want to run every check before bailing.
 command -v python3 >/dev/null || { echo "cs-doctor: python3 required" >&2; exit 127; }
 
-: "${CAIRN_BASE_URL:=https://mep39camvm.us-east-1.awsapprunner.com}"
+: "${CAIRN_BASE_URL:=https://api.cairnscore.ai}"
 : "${CAIRN_QUEUE:=$HOME/.cairn/queue.jsonl}"
 : "${CAIRN_RATER_BACKEND:=auto}"
 : "${CAIRN_ANTHROPIC_KEY_FILE:=$HOME/.cairn/anthropic-key}"
